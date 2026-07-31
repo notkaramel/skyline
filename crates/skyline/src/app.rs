@@ -1,0 +1,910 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use chrono::Local;
+use iced::widget::{container, mouse_area, row, space, text};
+use iced::window::Id;
+use iced::{Element, Event, Length, Subscription, Task};
+use iced::keyboard::{self, key::Named};
+use iced::mouse;
+use iced_layershell::reexport::{
+    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+};
+use iced_layershell::to_layer_message;
+use skyline_core::{
+    BrightnessSnapshot, CompositorState, Config, CustomSnapshot, ModuleKind, NetworkSnapshot,
+    ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuSnapshot, VolumeSnapshot,
+};
+use tracing::{info, warn};
+
+use crate::style;
+use crate::widgets;
+
+const METER_HISTORY: usize = 16;
+/// Quiet window before applying coalesced scroll deltas (trackpad-friendly).
+const SCROLL_DEBOUNCE: Duration = Duration::from_millis(70);
+/// Cap how far one commit can jump so a scroll burst stays controllable.
+const VOLUME_SCROLL_BURST: f64 = 0.10; // 10% of full scale
+const BRIGHTNESS_SCROLL_BURST: f64 = 10.0; // percent points
+
+pub struct App {
+    pub config: Config,
+    service_rx: std::sync::Arc<std::sync::Mutex<Receiver<ServiceEvent>>>,
+    service_tx: Sender<ServiceEvent>,
+    clock: String,
+    compositor: CompositorState,
+    sys: SysSnapshot,
+    network: NetworkSnapshot,
+    volume: VolumeSnapshot,
+    brightness: BrightnessSnapshot,
+    custom: HashMap<String, String>,
+    tray_items: Vec<TrayItemSnapshot>,
+    tray_menu: Option<TrayMenuSnapshot>,
+    popup_ids: HashMap<Id, PopupKind>,
+    /// Layer-shell surfaces that are the status bar (not tray popups).
+    bar_ids: Mutex<HashSet<Id>>,
+    bound_output: Option<String>,
+    errors: Vec<String>,
+    cpu_history: VecDeque<f32>,
+    mem_history: VecDeque<f32>,
+    gpu_history: VecDeque<f32>,
+    volume_pending: f64,
+    volume_last_input: Option<Instant>,
+    brightness_pending: f64,
+    brightness_last_input: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+pub enum PopupKind {
+    /// Fullscreen click-catcher under the tray menu.
+    TrayDismiss,
+    TrayMenu { item_id: String },
+    /// Hover tip for the clock (`modules.clock.tooltip_format`).
+    ClockTooltip,
+}
+
+#[to_layer_message(multi)]
+#[derive(Debug, Clone)]
+pub enum Message {
+    ServicePoll,
+    ScrollDebounce,
+    FocusWorkspace(u64),
+    VolumeScroll(f64),
+    VolumeToggleMute,
+    BrightnessScroll(f64),
+    ModuleClick { kind: ModuleKind, right: bool },
+    TrayActivate(String),
+    TrayOpenMenu(String),
+    TrayMenuClick { item_id: String, menu_id: i32 },
+    DismissTrayMenus,
+    ClockHover(bool),
+    ClosePopup(Id),
+    PointerPressed { window: Id },
+    IcedEvent(Event),
+    WindowClosed(Id),
+}
+
+impl App {
+    pub fn new(
+        config: Config,
+        service_rx: std::sync::Arc<std::sync::Mutex<Receiver<ServiceEvent>>>,
+        service_tx: Sender<ServiceEvent>,
+    ) -> (Self, Task<Message>) {
+        let bound_output = config.bar.output.clone();
+        (
+            Self {
+                config,
+                service_rx,
+                service_tx,
+                clock: String::new(),
+                compositor: CompositorState::default(),
+                sys: SysSnapshot::default(),
+                network: NetworkSnapshot::default(),
+                volume: VolumeSnapshot::default(),
+                brightness: BrightnessSnapshot::default(),
+                custom: HashMap::new(),
+                tray_items: Vec::new(),
+                tray_menu: None,
+                popup_ids: HashMap::new(),
+                bar_ids: Mutex::new(HashSet::new()),
+                bound_output,
+                errors: Vec::new(),
+                cpu_history: VecDeque::with_capacity(METER_HISTORY),
+                mem_history: VecDeque::with_capacity(METER_HISTORY),
+                gpu_history: VecDeque::with_capacity(METER_HISTORY),
+                volume_pending: 0.0,
+                volume_last_input: None,
+                brightness_pending: 0.0,
+                brightness_last_input: None,
+            },
+            Task::none(),
+        )
+    }
+
+    pub fn namespace() -> String {
+        "skyline".into()
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        let mut subs = vec![
+            iced::time::every(Duration::from_millis(100)).map(|_| Message::ServicePoll),
+            iced::event::listen_with(|event, _status, id| match &event {
+                Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
+                    if matches!(key, keyboard::Key::Named(Named::Escape)) =>
+                {
+                    Some(Message::DismissTrayMenus)
+                }
+                Event::Mouse(mouse::Event::ButtonPressed(_)) => {
+                    Some(Message::PointerPressed { window: id })
+                }
+                _ => None,
+            }),
+            iced::window::close_events().map(Message::WindowClosed),
+        ];
+        if self.volume_pending.abs() > f64::EPSILON
+            || self.brightness_pending.abs() > f64::EPSILON
+        {
+            subs.push(
+                iced::time::every(Duration::from_millis(25)).map(|_| Message::ScrollDebounce),
+            );
+        }
+        Subscription::batch(subs)
+    }
+
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::ServicePoll => self.drain_services(),
+            Message::ScrollDebounce => {
+                self.flush_volume_scroll(false);
+                self.flush_brightness_scroll(false);
+                Task::none()
+            }
+            Message::FocusWorkspace(id) => {
+                if skyline_niri::is_available() {
+                    if let Err(err) = skyline_niri::focus_workspace(id) {
+                        warn!("niri focus workspace: {err}");
+                    }
+                } else if skyline_hyprland::is_available() {
+                    if let Err(err) = skyline_hyprland::focus_workspace(id) {
+                        warn!("hyprland focus workspace: {err}");
+                    }
+                }
+                if let Some(cmd) = self
+                    .config
+                    .modules
+                    .click_command(&ModuleKind::Workspaces, false)
+                {
+                    skyline_services::run_click(cmd);
+                }
+                Task::none()
+            }
+            Message::VolumeScroll(delta) => {
+                if delta.abs() > f64::EPSILON {
+                    self.volume_pending += delta;
+                    self.volume_last_input = Some(Instant::now());
+                }
+                Task::none()
+            }
+            Message::VolumeToggleMute => {
+                self.volume_pending = 0.0;
+                self.volume_last_input = None;
+                self.volume = skyline_services::set_mute();
+                Task::none()
+            }
+            Message::BrightnessScroll(delta) => {
+                if delta.abs() > f64::EPSILON {
+                    self.brightness_pending += delta;
+                    self.brightness_last_input = Some(Instant::now());
+                }
+                Task::none()
+            }
+            Message::ModuleClick { kind, right } => {
+                if let Some(cmd) = self.config.modules.click_command(&kind, right) {
+                    skyline_services::run_click(cmd);
+                }
+                Task::none()
+            }
+            Message::TrayActivate(id) => {
+                let dismiss = self.close_tray_popups();
+                skyline_services::activate_item(&id);
+                dismiss
+            }
+            Message::TrayOpenMenu(id) => {
+                skyline_services::request_menu(&id, self.service_tx.clone());
+                Task::none()
+            }
+            Message::TrayMenuClick { item_id, menu_id } => {
+                skyline_services::activate_menu(&item_id, menu_id);
+                self.close_tray_popups()
+            }
+            Message::DismissTrayMenus => self.close_tray_popups(),
+            Message::ClockHover(true) => self.open_clock_tooltip(),
+            Message::ClockHover(false) => self.close_clock_tooltip(),
+            Message::ClosePopup(id) => {
+                self.popup_ids.remove(&id);
+                if self.popup_ids.is_empty() {
+                    self.tray_menu = None;
+                }
+                iced::window::close(id)
+            }
+            Message::PointerPressed { window } => {
+                // Clicking the bar (or anything that isn't the menu itself) dismisses menus.
+                if self.popup_ids.is_empty() {
+                    return Task::none();
+                }
+                let on_menu = matches!(
+                    self.popup_ids.get(&window),
+                    Some(PopupKind::TrayMenu { .. })
+                );
+                if on_menu {
+                    Task::none()
+                } else {
+                    self.close_tray_popups()
+                }
+            }
+            Message::WindowClosed(id) => {
+                self.popup_ids.remove(&id);
+                if let Ok(mut ids) = self.bar_ids.lock() {
+                    ids.remove(&id);
+                }
+                if self.popup_ids.is_empty() {
+                    self.tray_menu = None;
+                }
+                Task::none()
+            }
+            Message::IcedEvent(_event) => Task::none(),
+            _ => Task::none(),
+        }
+    }
+
+    fn close_tray_popups(&mut self) -> Task<Message> {
+        if self.popup_ids.is_empty() && self.tray_menu.is_none() {
+            return Task::none();
+        }
+        let ids: Vec<Id> = self.popup_ids.keys().copied().collect();
+        self.popup_ids.clear();
+        self.tray_menu = None;
+        Task::batch(ids.into_iter().map(iced::window::close))
+    }
+
+    fn clock_tooltip_text(&self) -> String {
+        Local::now()
+            .format(&self.config.modules.clock.tooltip_format)
+            .to_string()
+    }
+
+    fn close_clock_tooltip(&mut self) -> Task<Message> {
+        let ids: Vec<Id> = self
+            .popup_ids
+            .iter()
+            .filter(|(_, kind)| matches!(kind, PopupKind::ClockTooltip))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            self.popup_ids.remove(id);
+        }
+        if ids.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(ids.into_iter().map(iced::window::close))
+        }
+    }
+
+    fn open_clock_tooltip(&mut self) -> Task<Message> {
+        let fmt = self.config.modules.clock.tooltip_format.trim();
+        if fmt.is_empty() {
+            return Task::none();
+        }
+        if self
+            .popup_ids
+            .values()
+            .any(|k| matches!(k, PopupKind::ClockTooltip))
+        {
+            return Task::none();
+        }
+
+        let tip = self.clock_tooltip_text();
+        let width = ((tip.chars().count() as u32).saturating_mul(9) + 28).clamp(120, 480);
+        let height = (self.config.theme.font_size as u32 + 18).max(28);
+        let gap = self.config.bar.tray_menu_gap.max(0);
+        let (anchor, margin) = if self.config.bar.anchor == "bottom" {
+            let bottom = self.config.bar.margin[2] + self.config.bar.height as i32 + gap;
+            (Anchor::Bottom, (0, 0, bottom, 0))
+        } else {
+            let top = self.config.bar.margin[0] + self.config.bar.height as i32 + gap;
+            (Anchor::Top, (top, 0, 0, 0))
+        };
+
+        let id = Id::unique();
+        self.popup_ids.insert(id, PopupKind::ClockTooltip);
+        Task::done(Message::NewLayerShell {
+            settings: NewLayerShellSettings {
+                size: Some((width, height)),
+                exclusive_zone: Some(0),
+                anchor,
+                layer: Layer::Overlay,
+                margin: Some(margin),
+                keyboard_interactivity: KeyboardInteractivity::None,
+                events_transparent: true,
+                output_option: OutputOption::LastOutput,
+                ..Default::default()
+            },
+            id,
+        })
+    }
+
+    fn apply_config_reload(&mut self, config: Config) -> Task<Message> {
+        skyline_services::reload_from_config(&config, self.service_tx.clone());
+
+        let keep: HashSet<&str> = config
+            .modules
+            .custom
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        self.custom.retain(|id, _| keep.contains(id.as_str()));
+
+        self.bound_output = config.bar.output.clone();
+        self.config = config;
+        info!("applied hot-reloaded config");
+        self.layer_tasks_for_bar()
+    }
+
+    fn layer_tasks_for_bar(&self) -> Task<Message> {
+        let anchor = match self.config.bar.anchor.as_str() {
+            "bottom" => Anchor::Bottom | Anchor::Left | Anchor::Right,
+            _ => Anchor::Top | Anchor::Left | Anchor::Right,
+        };
+        let height = self.config.bar.height;
+        let margin = self.config.bar.margin;
+        let exclusive = self.config.bar.exclusive_zone;
+        let ids: Vec<Id> = self
+            .bar_ids
+            .lock()
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+
+        let mut tasks = Vec::with_capacity(ids.len() * 4);
+        for id in ids {
+            tasks.push(Task::done(Message::AnchorChange { id, anchor }));
+            tasks.push(Task::done(Message::SizeChange {
+                id,
+                size: (0, height),
+            }));
+            tasks.push(Task::done(Message::MarginChange {
+                id,
+                margin: (margin[0], margin[1], margin[2], margin[3]),
+            }));
+            tasks.push(Task::done(Message::ExclusiveZoneChange {
+                id,
+                zone_size: exclusive,
+            }));
+        }
+        Task::batch(tasks)
+    }
+
+    fn displayed_volume(&self) -> VolumeSnapshot {
+        VolumeSnapshot {
+            percent: (self.volume.percent + self.volume_pending * 100.0).clamp(
+                0.0,
+                self.config.modules.volume.max_percent,
+            ),
+            muted: self.volume.muted,
+            bluetooth: self.volume.bluetooth && self.config.modules.volume.detect_bluetooth,
+            device: self.volume.device.clone(),
+        }
+    }
+
+    fn displayed_brightness(&self) -> BrightnessSnapshot {
+        BrightnessSnapshot {
+            percent: (self.brightness.percent + self.brightness_pending).clamp(0.0, 100.0),
+            available: self.brightness.available,
+        }
+    }
+
+    fn tray_menu_margin(&self) -> (i32, i32, i32, i32) {
+        let gap = self.config.bar.tray_menu_gap.max(0);
+        let top = self.config.bar.margin[0] + self.config.bar.height as i32 + gap;
+        let right = self.config.bar.margin[1];
+        (top, right, 0, 0)
+    }
+
+    fn flush_volume_scroll(&mut self, force: bool) {
+        if self.volume_pending.abs() <= f64::EPSILON {
+            self.volume_last_input = None;
+            return;
+        }
+        let quiet = self
+            .volume_last_input
+            .is_none_or(|t| t.elapsed() >= SCROLL_DEBOUNCE);
+        if !force && !quiet {
+            return;
+        }
+        let pending = std::mem::take(&mut self.volume_pending);
+        self.volume_last_input = None;
+        let apply = pending.clamp(-VOLUME_SCROLL_BURST, VOLUME_SCROLL_BURST);
+        self.volume = skyline_services::set_volume_delta(apply);
+        let leftover = pending - apply;
+        if leftover.abs() > f64::EPSILON {
+            self.volume_pending = leftover;
+            // Ready to flush remainder on the next debounce tick.
+            self.volume_last_input = Some(Instant::now() - SCROLL_DEBOUNCE);
+        }
+    }
+
+    fn flush_brightness_scroll(&mut self, force: bool) {
+        if self.brightness_pending.abs() <= f64::EPSILON {
+            self.brightness_last_input = None;
+            return;
+        }
+        let quiet = self
+            .brightness_last_input
+            .is_none_or(|t| t.elapsed() >= SCROLL_DEBOUNCE);
+        if !force && !quiet {
+            return;
+        }
+        let pending = std::mem::take(&mut self.brightness_pending);
+        self.brightness_last_input = None;
+        let apply = pending.clamp(-BRIGHTNESS_SCROLL_BURST, BRIGHTNESS_SCROLL_BURST);
+        self.brightness = skyline_services::set_brightness_delta(apply);
+        let leftover = pending - apply;
+        if leftover.abs() > f64::EPSILON {
+            self.brightness_pending = leftover;
+            self.brightness_last_input = Some(Instant::now() - SCROLL_DEBOUNCE);
+        }
+    }
+
+    fn drain_services(&mut self) -> Task<Message> {
+        let events: Vec<ServiceEvent> = {
+            let Ok(rx) = self.service_rx.lock() else {
+                return Task::none();
+            };
+            let mut events = Vec::new();
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => events.push(ev),
+                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            events
+        };
+        let mut tasks = Vec::new();
+        for ev in events {
+            if let Some(task) = self.apply_service(ev) {
+                tasks.push(task);
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn apply_service(&mut self, ev: ServiceEvent) -> Option<Task<Message>> {
+        match ev {
+            ServiceEvent::Tick => None,
+            ServiceEvent::Clock(s) => {
+                self.clock = s;
+                None
+            }
+            ServiceEvent::Compositor(state) => {
+                self.compositor = state;
+                None
+            }
+            ServiceEvent::Sys(s) => {
+                push_meter(&mut self.cpu_history, s.cpu_percent);
+                push_meter(&mut self.mem_history, s.memory_percent);
+                if let Some(gpu) = s.gpu_percent {
+                    push_meter(&mut self.gpu_history, gpu);
+                }
+                self.sys = s;
+                None
+            }
+            ServiceEvent::Network(n) => {
+                self.network = n;
+                None
+            }
+            ServiceEvent::Volume(v) => {
+                // Don't clobber an in-flight scroll preview.
+                if self.volume_pending.abs() <= f64::EPSILON {
+                    self.volume = v;
+                }
+                None
+            }
+            ServiceEvent::Brightness(b) => {
+                if self.brightness_pending.abs() <= f64::EPSILON {
+                    self.brightness = b;
+                }
+                None
+            }
+            ServiceEvent::Custom(CustomSnapshot { id, text }) => {
+                self.custom.insert(id, text);
+                None
+            }
+            ServiceEvent::TrayItems(items) => {
+                self.tray_items = items;
+                None
+            }
+            ServiceEvent::TrayMenu(menu) => {
+                let item_id = menu.item_id.clone();
+                self.tray_menu = Some(menu);
+                // Close any existing tray popup first.
+                let mut tasks: Vec<Task<Message>> = self
+                    .popup_ids
+                    .keys()
+                    .copied()
+                    .map(iced::window::close)
+                    .collect();
+                self.popup_ids.clear();
+
+                // Fullscreen dismiss layer under the menu catches outside clicks.
+                let dismiss_id = Id::unique();
+                self.popup_ids.insert(dismiss_id, PopupKind::TrayDismiss);
+                tasks.push(Task::done(Message::NewLayerShell {
+                    settings: NewLayerShellSettings {
+                        size: None,
+                        exclusive_zone: Some(0),
+                        anchor: Anchor::Top
+                            | Anchor::Bottom
+                            | Anchor::Left
+                            | Anchor::Right,
+                        layer: Layer::Top,
+                        margin: Some((0, 0, 0, 0)),
+                        keyboard_interactivity: KeyboardInteractivity::None,
+                        events_transparent: false,
+                        ..Default::default()
+                    },
+                    id: dismiss_id,
+                }));
+
+                let menu_id = Id::unique();
+                self.popup_ids.insert(
+                    menu_id,
+                    PopupKind::TrayMenu {
+                        item_id: item_id.clone(),
+                    },
+                );
+                let entries = self
+                    .tray_menu
+                    .as_ref()
+                    .map(|m| m.entries.len())
+                    .unwrap_or(1)
+                    .max(1);
+                let height = (entries as u32 * 28 + 16).min(400);
+                let (top, right, bottom, left) = self.tray_menu_margin();
+                tasks.push(Task::done(Message::NewLayerShell {
+                    settings: NewLayerShellSettings {
+                        size: Some((240, height)),
+                        exclusive_zone: None,
+                        anchor: Anchor::Top | Anchor::Right,
+                        layer: Layer::Overlay,
+                        margin: Some((top, right, bottom, left)),
+                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                        ..Default::default()
+                    },
+                    id: menu_id,
+                }));
+                Some(Task::batch(tasks))
+            }
+            ServiceEvent::ConfigReloaded(config) => Some(self.apply_config_reload(*config)),
+            ServiceEvent::Error(err) => {
+                warn!("{err}");
+                self.errors.push(err);
+                if self.errors.len() > 5 {
+                    self.errors.remove(0);
+                }
+                None
+            }
+        }
+    }
+
+    pub fn view(&self, id: Id) -> Element<'_, Message> {
+        match self.popup_ids.get(&id) {
+            Some(PopupKind::TrayDismiss) => {
+                return mouse_area(
+                    container(space::Space::new())
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .on_press(Message::DismissTrayMenus)
+                .on_right_press(Message::DismissTrayMenus)
+                .into();
+            }
+            Some(PopupKind::TrayMenu { item_id }) => {
+                return widgets::tray_menu_popup(
+                    item_id,
+                    self.tray_menu.as_ref(),
+                    &self.config.theme,
+                );
+            }
+            Some(PopupKind::ClockTooltip) => {
+                return widgets::clock_tooltip(self.clock_tooltip_text(), &self.config.theme);
+            }
+            None => {}
+        }
+
+        if let Ok(mut ids) = self.bar_ids.lock() {
+            ids.insert(id);
+        }
+
+        let output = self
+            .bound_output
+            .as_deref()
+            .or(self.compositor.focused_output.as_deref());
+
+        let left = self.island(&self.config.modules.left, output);
+        let center = self.island(&self.config.modules.center, output);
+        let right = self.island(&self.config.modules.right, output);
+
+        // Stack keeps the center island geometrically fixed in the middle:
+        // base layer = centered clock (etc.), top layer = left/right edges.
+        // Horizontal spacer in the top row does not capture clicks, so the
+        // center island still receives input under the gap.
+        let edges = row![left, space::horizontal(), right,]
+            .spacing(f32::from(self.config.bar.island_gap))
+            .padding(self.config.bar.padding)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(iced::Alignment::Center);
+
+        let middle = container(center)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center(Length::Fill)
+            .padding(self.config.bar.padding);
+
+        let content = iced::widget::stack![middle, edges]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        style::bar_container(content, &self.config.theme)
+    }
+
+    fn island<'a>(
+        &'a self,
+        modules: &'a [ModuleKind],
+        output: Option<&str>,
+    ) -> Element<'a, Message> {
+        let mut children: Vec<Element<'a, Message>> = Vec::new();
+        for kind in modules {
+            if let Some(el) = self.module_view(kind, output) {
+                if self.config.bar.separators && !children.is_empty() {
+                    children.push(widgets::module_separator(
+                        &self.config.bar.separator,
+                        &self.config.theme,
+                    ));
+                }
+                children.push(el);
+            }
+        }
+        if children.is_empty() {
+            return space::Space::new().width(0).into();
+        }
+        style::island(
+            row(children)
+                .spacing(8.0)
+                .height(Length::Fill)
+                .align_y(iced::Alignment::Center)
+                .into(),
+            &self.config.theme,
+        )
+    }
+
+    fn module_view<'a>(
+        &'a self,
+        kind: &'a ModuleKind,
+        output: Option<&str>,
+    ) -> Option<Element<'a, Message>> {
+        let clicks = self.config.modules.clicks_for(kind);
+        let el = match kind {
+            ModuleKind::Workspaces => {
+                let ws = widgets::workspaces(&self.compositor, output, &self.config.theme);
+                // Left-click stays on workspace buttons (focus + optional on_click).
+                // Only attach right-click on the strip here.
+                let mut strip = clicks.clone();
+                strip.on_click = None;
+                Some(widgets::with_clicks(ws, ModuleKind::Workspaces, &strip))
+            }
+            ModuleKind::Window => {
+                let title = self
+                    .compositor
+                    .focused_window_for_output(output)
+                    .map(|w| truncate(&w.title, self.config.modules.window.max_chars))
+                    .unwrap_or_default();
+                if title.is_empty() {
+                    None
+                } else {
+                    Some(
+                        text(title)
+                            .size(self.config.theme.font_size)
+                            .font(style::ui_font(&self.config.theme))
+                            .color(style::rgba(self.config.theme.muted))
+                            .into(),
+                    )
+                }
+            }
+            ModuleKind::Clock => {
+                let label = text(&self.clock)
+                    .size(self.config.theme.font_size)
+                    .font(style::ui_font(&self.config.theme))
+                    .color(style::rgba(self.config.theme.text));
+                let clickable = widgets::with_clicks(label.into(), ModuleKind::Clock, &clicks);
+                if self
+                    .config
+                    .modules
+                    .clock
+                    .tooltip_format
+                    .trim()
+                    .is_empty()
+                {
+                    Some(clickable)
+                } else {
+                    Some(
+                        mouse_area(clickable)
+                            .on_enter(Message::ClockHover(true))
+                            .on_exit(Message::ClockHover(false))
+                            .into(),
+                    )
+                }
+            }
+            ModuleKind::Cpu => Some(widgets::cava_meter(
+                "cpu",
+                &self.cpu_history,
+                self.sys.cpu_percent,
+                &self.config.theme,
+                &self.config.modules.cpu,
+            )),
+            ModuleKind::Memory => Some(widgets::cava_meter(
+                "ram",
+                &self.mem_history,
+                self.sys.memory_percent,
+                &self.config.theme,
+                &self.config.modules.memory,
+            )),
+            ModuleKind::Gpu => {
+                let value = self.sys.gpu_percent.unwrap_or(0.0);
+                Some(widgets::cava_meter(
+                    "gpu",
+                    &self.gpu_history,
+                    value,
+                    &self.config.theme,
+                    &self.config.modules.gpu,
+                ))
+            }
+            ModuleKind::Network => {
+                let cfg = &self.config.modules.network;
+                let raw = if self.network.connected {
+                    if cfg.show_name {
+                        self.network.label.clone()
+                    } else {
+                        self.network
+                            .interface
+                            .clone()
+                            .unwrap_or_else(|| self.network.label.clone())
+                    }
+                } else {
+                    "offline".into()
+                };
+                let name = truncate(&raw, cfg.max_chars.max(1));
+                let color = style::rgba(if self.network.connected {
+                    self.config.theme.text
+                } else {
+                    self.config.theme.danger
+                });
+                if self.network.connected {
+                    match (cfg.show_strength, self.network.strength) {
+                        (true, Some(s)) => Some(
+                            row![
+                                text(name)
+                                    .size(self.config.theme.font_size)
+                                    .font(style::ui_font(&self.config.theme))
+                                    .color(color),
+                                style::percent_slot(
+                                    f64::from(s),
+                                    &self.config.theme,
+                                    self.config.theme.font_size,
+                                    color,
+                                ),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::Alignment::Center)
+                            .into(),
+                        ),
+                        _ => Some(
+                            text(name)
+                                .size(self.config.theme.font_size)
+                                .font(style::ui_font(&self.config.theme))
+                                .color(color)
+                                .into(),
+                        ),
+                    }
+                } else {
+                    Some(
+                        text(name)
+                            .size(self.config.theme.font_size)
+                            .font(style::ui_font(&self.config.theme))
+                            .color(color)
+                            .into(),
+                    )
+                }
+            }
+            ModuleKind::Volume => {
+                let snap = self.displayed_volume();
+                Some(widgets::volume(
+                    snap.percent,
+                    snap.muted,
+                    snap.bluetooth,
+                    snap.device.as_deref(),
+                    &self.config.theme,
+                    self.config.modules.volume.step,
+                    self.config.modules.volume.show_percent,
+                    self.config.modules.volume.show_device,
+                    &clicks,
+                ))
+            }
+            ModuleKind::Brightness => {
+                let snap = self.displayed_brightness();
+                if snap.available {
+                    Some(widgets::brightness(
+                        snap.percent,
+                        &self.config.theme,
+                        self.config.modules.brightness.step,
+                        self.config.modules.brightness.show_percent,
+                        &clicks,
+                    ))
+                } else {
+                    None
+                }
+            }
+            ModuleKind::Tray => {
+                if self.tray_items.is_empty() {
+                    None
+                } else {
+                    Some(widgets::tray_icons(&self.tray_items, &self.config.theme))
+                }
+            }
+            ModuleKind::Custom(id) => {
+                let text_val = self.custom.get(id).cloned().unwrap_or_default();
+                if text_val.is_empty() {
+                    return None;
+                }
+                let content = text(text_val)
+                    .size(self.config.theme.font_size)
+                    .font(style::ui_font(&self.config.theme))
+                    .color(style::rgba(self.config.theme.text));
+                Some(widgets::with_clicks(
+                    content.into(),
+                    ModuleKind::Custom(id.clone()),
+                    &clicks,
+                ))
+            }
+        }?;
+
+        // Volume / brightness / workspaces / custom / tray / clock manage their own hit targets.
+        match kind {
+            ModuleKind::Volume
+            | ModuleKind::Brightness
+            | ModuleKind::Workspaces
+            | ModuleKind::Tray
+            | ModuleKind::Clock
+            | ModuleKind::Custom(_) => Some(el),
+            other => Some(widgets::with_clicks(el, other.clone(), &clicks)),
+        }
+    }
+}
+
+fn push_meter(history: &mut VecDeque<f32>, value: f32) {
+    history.push_back(value.clamp(0.0, 100.0));
+    while history.len() > METER_HISTORY {
+        history.pop_front();
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{t}…")
+    }
+}

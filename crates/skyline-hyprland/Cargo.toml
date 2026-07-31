@@ -1,0 +1,11 @@
+[package]
+name = "skyline-hyprland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hyprland compositor backend for Skyline"
+
+[dependencies]
+skyline-core.workspace = true
+hyprland.workspace = true
+tracing.workspace = true

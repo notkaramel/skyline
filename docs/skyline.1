@@ -1,0 +1,304 @@
+.\" Manpage for skyline
+.\" Contact: https://github.com/antoine/skyline
+.TH SKYLINE 1 "July 2026" "skyline 0.1.0" "User Commands"
+.SH NAME
+skyline \- native Wayland status bar with modular islands
+.SH SYNOPSIS
+.B skyline
+[\fB\-c\fR|\fB\-\-config\fR \fIPATH\fR]
+.br
+.B skyline
+\fB\-\-write\-example\-config\fR
+.br
+.B skyline
+[\fB\-h\fR|\fB\-\-help\fR]
+.SH DESCRIPTION
+.B skyline
+is a Wayland status bar for compositors that implement
+.B wlr-layer-shell
+(niri, Hyprland, Sway, and others). It draws modular
+.I islands
+on each monitor with workspaces, window titles, a clock, resource meters,
+network status, volume and brightness controls, custom command modules, and a
+StatusNotifierItem system tray.
+.PP
+Skyline is written in Rust using
+.B iced
+and
+.B iced_layershell
+(no GTK, no Electron).
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Load configuration from
+.IR PATH
+instead of the default config file.
+.TP
+.B \-\-write\-example\-config
+Write a starter configuration to
+.I ~/.config/skyline/config.toml
+(creating parent directories as needed) and exit.
+.TP
+.BR \-h ", " \-\-help
+Print a short usage summary and exit.
+.SH ENVIRONMENT
+.TP
+.B NIRI_SOCKET
+When set, Skyline uses the niri IPC event stream for workspaces and windows.
+.TP
+.B HYPRLAND_INSTANCE_SIGNATURE
+When set (and niri is not detected), Skyline uses the Hyprland IPC backend.
+.TP
+.B SKYLINE_OUTPUT
+If set to a Wayland output name (for example
+.BR DP-1 ),
+Skyline binds to that output only. Otherwise it opens a bar on all outputs.
+.TP
+.B RUST_LOG
+Controls log filtering via
+.BR tracing-subscriber
+(for example
+.BR skyline=debug,system_tray=warn ).
+.SH FILES
+.TP
+.I ~/.config/skyline/config.toml
+User configuration (TOML). Created by
+.B \-\-write\-example\-config
+or
+.BR "make config" .
+The running bar watches this file and hot-reloads on save
+(theme, modules, separators, scroll steps, bar geometry, clock
+format, sys refresh, and custom modules). Changing the compositor
+backend still requires a restart.
+.TP
+.I /usr/local/bin/skyline
+Typical install location when using
+.BR "sudo make install" .
+.SH CONFIGURATION
+Configuration is TOML. Important keys:
+.TP
+.B [bar]
+.BR height ,
+.BR margin
+(top,right,bottom,left),
+.BR exclusive_zone
+(pixels reserved so windows stay below/above the bar; use
+.B 0
+for floating islands),
+.BR anchor
+(\fItop\fR or \fIbottom\fR),
+.BR output ,
+.BR padding ,
+.BR island_gap ,
+.BR separators
+(boolean; draw separators between modules),
+.BR separator
+(string glyph, default
+.BR │ ),
+.BR tray_menu_gap
+(pixels between the bar and a tray context menu; default
+.BR 4 ).
+.TP
+.B [theme]
+RGBA float arrays in 0..=1 for
+.BR background ,
+.BR island_background ,
+.BR text ,
+.BR muted ,
+.BR accent ,
+.BR danger ,
+.BR separator ,
+plus
+.BR island_radius ,
+.BR island_padding
+(vertical, horizontal; shared by every module island),
+.BR font_size ,
+.BR font
+(UI family; empty = system default),
+.BR emoji_font
+(volume/brightness glyphs; empty = same as
+.BR font ),
+.BR meter_height ,
+.BR meter_width ,
+.BR meter_gap ,
+and
+.BR meter_bars
+(cava-style CPU/RAM/GPU meters).
+Per-meter
+.B [modules.cpu]
+/
+.B memory
+/
+.B gpu
+support
+.BR label
+and
+.BR format
+with tokens
+.BR {label} ,
+.BR {bar}
+(or
+.BR {meter} ),
+and
+.BR {percent}
+(or
+.BR {pct} ).
+.TP
+.B [modules]
+.BR left ,
+.BR center ,
+and
+.BR right
+are arrays of module names:
+.BR workspaces ,
+.BR window ,
+.BR clock ,
+.BR cpu ,
+.BR memory ,
+.BR gpu ,
+.BR network ,
+.BR volume ,
+.BR brightness ,
+.BR tray ,
+or
+.BI custom: id .
+.br
+.BR tray
+enables the system tray host.
+.TP
+.B [modules.volume]
+.BR step
+(scroll fraction of full scale, default
+.BR 0.02 ),
+.BR max_percent
+(soft ceiling, default
+.BR 150.0 ),
+.BR detect_bluetooth
+(when true, show a headset glyph if the default sink is a Bluetooth/bluez
+device),
+.BR show_device ,
+.BR show_percent .
+.TP
+.B [modules.brightness]
+.BR step
+(percent points per scroll notch, default
+.BR 2.0 )
+and
+.BR show_percent .
+.TP
+.B [modules.window]
+.B max_chars
+truncates the focused window title.
+.TP
+.B [modules.network]
+.B show_strength
+toggles signal percent when available.
+.TP
+.B on_click / on_right_click
+Most module sections accept optional shell commands run on left or right
+click (via
+.BR sh\~\-c ).
+Volume left-click still mutes when
+.B on_click
+is unset. Workspace left-click still focuses, and also runs
+.B on_click
+when set. Tray icons keep native SNI activate / menu actions.
+.TP
+.B [modules.sys]
+.B refresh_ms
+controls how often CPU/RAM/GPU meters sample (default
+.BR 500 ).
+.TP
+.B [[modules.custom]]
+Custom command islands:
+.BR id ,
+.BR command ,
+.BR args ,
+.BR interval_ms ,
+optional
+.BR on_click ,
+and
+.BR json
+(when true, read a
+.B text
+field from JSON stdout).
+.TP
+.B [compositor]
+.B backend
+may be
+.BR auto ,
+.BR niri ,
+.BR hyprland ,
+or
+.BR none .
+.SH INTERACTIONS
+.TP
+Workspaces
+Left-click focuses the workspace (niri or Hyprland).
+.TP
+Volume
+Scroll to change volume;
+click to mute/unmute. Updates are pushed in real time via PulseAudio
+subscription (or a fast
+.B wpctl
+poll fallback). When
+.B detect_bluetooth
+is enabled and the default sink is Bluetooth, the module shows a headset
+glyph instead of speaker emojis.
+.TP
+Brightness
+Scroll to adjust via
+.BR brightnessctl (1)
+.RI ( brightnessctl\ -m
+to read,
+.B brightnessctl set N%+/N%-
+to change). Polled for external changes.
+.TP
+Tray
+Left-click activates the item; right-click opens its DBusMenu as an overlay.
+Icons prefer named theme icons (and desktop-file fallbacks), then SNI pixmaps.
+.SH EXAMPLES
+Build and run from the source tree:
+.PP
+.nf
+.RS
+make run
+.RE
+.fi
+.PP
+Install the binary system-wide:
+.PP
+.nf
+.RS
+sudo make install
+.RE
+.fi
+.PP
+Start with niri:
+.PP
+.nf
+.RS
+spawn-at-startup "skyline"
+.RE
+.fi
+.PP
+Pin to one output:
+.PP
+.nf
+.RS
+SKYLINE_OUTPUT=DP-1 skyline
+.RE
+.fi
+.SH BUGS
+Report issues at the project repository. Some StatusNotifierItem clients omit
+optional properties such as
+.BR IconPixmap ;
+Skyline treats those as non-fatal.
+.SH SEE ALSO
+.BR niri (1),
+.BR hyprland (1),
+.BR wpctl (1),
+.BR brightnessctl (1),
+.BR nmcli (1)
+.SH AUTHOR
+Skyline contributors

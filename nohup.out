@@ -1,0 +1,65 @@
+[2026-07-30 19:44:38.401] [info] Using configuration file /home/antoine/.config/waybar/config
+[2026-07-30 19:44:38.404] [info] Using CSS file /home/antoine/.config/waybar/style.css
+[2026-07-30 19:44:38.410] [warning] Hyprland is not running, Hyprland IPC will not be available.
+[2026-07-30 19:44:38.410] [warning] module hyprland/workspaces: Disabling module "hyprland/workspaces", Hyprland IPC: HYPRLAND_INSTANCE_SIGNATURE was not set! (Is Hyprland running?)
+[2026-07-30 19:44:38.410] [info] Niri IPC starting
+[2026-07-30 19:44:38.410] [warning] module hyprland/workspaces: Disabling module "hyprland/workspaces", Hyprland IPC: HYPRLAND_INSTANCE_SIGNATURE was not set! (Is Hyprland running?)
+[2026-07-30 19:44:38.411] [warning] module hyprland/window: Disabling module "hyprland/window", Hyprland IPC: HYPRLAND_INSTANCE_SIGNATURE was not set! (Is Hyprland running?)
+[2026-07-30 19:44:38.412] [warning] module backlight: Disabling module "backlight", No backlight found
+[2026-07-30 19:44:38.413] [warning] No batteries.
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event23 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event12 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event11 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event10 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event9 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/mouse0 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event8 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [warning] Can't open /dev/input/event7 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.413] [info] Found device ZSA Technology Labs Moonlander Mark I Keyboard at '/dev/input/event6'
+[2026-07-30 19:44:38.443] [info] Found device ZSA Technology Labs Moonlander Mark I at '/dev/input/event2'
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event22 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event21 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event20 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event19 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event18 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event17 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event16 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event15 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event14 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event13 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/mice (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event3 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event1 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.459] [warning] Can't open /dev/input/event0 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.607] [warning] module hyprland/window: Disabling module "hyprland/window", Hyprland IPC: HYPRLAND_INSTANCE_SIGNATURE was not set! (Is Hyprland running?)
+[2026-07-30 19:44:38.608] [warning] module backlight: Disabling module "backlight", No backlight found
+[2026-07-30 19:44:38.608] [warning] No batteries.
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event23 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event12 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event11 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event10 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event9 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/mouse0 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event8 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [warning] Can't open /dev/input/event7 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.612] [info] Found device ZSA Technology Labs Moonlander Mark I Keyboard at '/dev/input/event6'
+[2026-07-30 19:44:38.647] [info] Found device ZSA Technology Labs Moonlander Mark I at '/dev/input/event2'
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event22 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event21 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event20 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event19 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event18 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event17 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event16 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event15 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event14 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event13 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/mice (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event3 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event1 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.666] [warning] Can't open /dev/input/event0 (are you in the input group?): EACCES Permission denied
+[2026-07-30 19:44:38.966] [info] Bar configured (width: 2548, height: 30) for output: DP-3
+[2026-07-30 19:44:38.966] [info] Bar configured (width: 2548, height: 30) for output: DP-1
+[2026-07-30 19:44:40.141] [info] Quitting.
+[2026-07-30 19:44:40.189] [info] Hyprland IPC stopping...
+[2026-07-30 19:44:40.189] [error] Hyprland IPC: Couldn't shutdown socket

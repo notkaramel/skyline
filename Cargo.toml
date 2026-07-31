@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/skyline",
+    "crates/skyline-core",
+    "crates/skyline-niri",
+    "crates/skyline-hyprland",
+    "crates/skyline-services",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/antoine/skyline"
+
+[workspace.dependencies]
+skyline-core = { path = "crates/skyline-core" }
+skyline-niri = { path = "crates/skyline-niri" }
+skyline-hyprland = { path = "crates/skyline-hyprland" }
+skyline-services = { path = "crates/skyline-services" }
+
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+futures = "0.3"
+futures-util = "0.3"
+hyprland = "0.4.0-beta.3"
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "tokio", "wayland", "image"] }
+iced_layershell = "0.19.1"
+libpulse-binding = "2.30"
+niri-ipc = "=26.4.0"
+nmrs = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "6"
+sysinfo = "0.35"
+system-tray = { path = "vendor/system-tray" }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }

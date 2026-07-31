@@ -1,0 +1,23 @@
+[package]
+name = "skyline-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "System services for Skyline (sysinfo, audio, brightness, network, tray, custom)"
+
+[dependencies]
+skyline-core.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+libpulse-binding.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+system-tray.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["tray"]
+tray = []
