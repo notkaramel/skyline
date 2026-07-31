@@ -151,6 +151,7 @@ and
 .BR right
 are arrays of module names:
 .BR workspaces ,
+.BR taskbar ,
 .BR window ,
 .BR clock ,
 .BR cpu ,
@@ -189,6 +190,17 @@ and
 .B [modules.window]
 .B max_chars
 truncates the focused window title.
+.TP
+.B [modules.taskbar]
+Icon strip of open windows on the active workspace of each monitor.
+.BR width
+(uniform square wrapper size in logical pixels; the strip grows with icon count),
+.BR padding
+(inset between wrapper and icon),
+.BR gap ,
+and
+.BR max_items .
+Left-click focuses the window (niri / Hyprland).
 .TP
 .B [modules.network]
 .B show_strength

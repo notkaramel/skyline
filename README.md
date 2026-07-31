@@ -7,7 +7,7 @@ Native Wayland status bar with modular islands. Built in Rust with `iced` + `ice
 - Per-monitor layer-shell bars (`AllScreens` or a single `--output`)
 - Island layout: left / center / right module groups
 - Niri (`EventStream`) and Hyprland compositor backends
-- Workspaces + focused window title
+- Workspaces, window taskbar (icons), focused window title
 - Clock, CPU, RAM, GPU, network, volume, brightness
 - Custom command islands (interval + optional click)
 - StatusNotifierItem system tray host

@@ -86,13 +86,13 @@ pub struct ThemeConfig {
     pub font: String,
     /// Font for emoji glyphs (volume/brightness). Empty = same as `font`.
     pub emoji_font: String,
-    /// Height of cava-style meter bars in logical pixels.
+    /// Height of realtime usage meter bars in logical pixels.
     pub meter_height: f32,
-    /// Width of each cava-style meter column in logical pixels.
+    /// Width of each usage meter column in logical pixels.
     pub meter_width: f32,
-    /// Gap between cava-style meter columns.
+    /// Gap between usage meter columns.
     pub meter_gap: f32,
-    /// Number of vertical bars in cava-style meters.
+    /// Columns for memory’s fill meter (CPU uses core count; GPU uses device count).
     pub meter_bars: u8,
 }
 
@@ -141,6 +141,7 @@ pub struct ModulesConfig {
     pub window: WindowConfig,
     pub network: NetworkConfig,
     pub workspaces: WorkspacesConfig,
+    pub taskbar: TaskbarConfig,
     pub cpu: MeterClickConfig,
     pub memory: MeterClickConfig,
     pub gpu: MeterClickConfig,
@@ -150,7 +151,7 @@ pub struct ModulesConfig {
 impl Default for ModulesConfig {
     fn default() -> Self {
         Self {
-            left: vec![ModuleKind::Workspaces, ModuleKind::Window],
+            left: vec![ModuleKind::Workspaces, ModuleKind::Taskbar, ModuleKind::Window],
             center: vec![ModuleKind::Clock],
             right: vec![
                 ModuleKind::Cpu,
@@ -169,6 +170,7 @@ impl Default for ModulesConfig {
             window: WindowConfig::default(),
             network: NetworkConfig::default(),
             workspaces: WorkspacesConfig::default(),
+            taskbar: TaskbarConfig::default(),
             cpu: MeterClickConfig::default(),
             memory: MeterClickConfig::default(),
             gpu: MeterClickConfig::default(),
@@ -183,6 +185,7 @@ impl ModulesConfig {
         let actions = match kind {
             ModuleKind::Workspaces => &self.workspaces.clicks,
             ModuleKind::Window => &self.window.clicks,
+            ModuleKind::Taskbar => &self.taskbar.clicks,
             ModuleKind::Clock => &self.clock.clicks,
             ModuleKind::Cpu => &self.cpu.clicks,
             ModuleKind::Memory => &self.memory.clicks,
@@ -211,6 +214,7 @@ impl ModulesConfig {
         match kind {
             ModuleKind::Workspaces => self.workspaces.clicks.clone(),
             ModuleKind::Window => self.window.clicks.clone(),
+            ModuleKind::Taskbar => self.taskbar.clicks.clone(),
             ModuleKind::Clock => self.clock.clicks.clone(),
             ModuleKind::Cpu => self.cpu.clicks.clone(),
             ModuleKind::Memory => self.memory.clicks.clone(),
@@ -255,6 +259,7 @@ impl ClickActions {
 pub enum ModuleKind {
     Workspaces,
     Window,
+    Taskbar,
     Clock,
     Cpu,
     Memory,
@@ -271,6 +276,7 @@ impl ModuleKind {
         match self {
             Self::Workspaces => "workspaces".into(),
             Self::Window => "window".into(),
+            Self::Taskbar => "taskbar".into(),
             Self::Clock => "clock".into(),
             Self::Cpu => "cpu".into(),
             Self::Memory => "memory".into(),
@@ -302,6 +308,7 @@ impl<'de> Deserialize<'de> for ModuleKind {
         Ok(match s.as_str() {
             "workspaces" => Self::Workspaces,
             "window" => Self::Window,
+            "taskbar" => Self::Taskbar,
             "clock" => Self::Clock,
             "cpu" => Self::Cpu,
             "memory" => Self::Memory,
@@ -439,6 +446,35 @@ pub struct WorkspacesConfig {
 impl Default for WorkspacesConfig {
     fn default() -> Self {
         Self {
+            clicks: ClickActions::default(),
+        }
+    }
+}
+
+/// Open windows on the active workspace (icon taskbar).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskbarConfig {
+    /// Icon square size in logical pixels (not including highlight padding).
+    #[serde(alias = "icon_size")]
+    pub width: f32,
+    /// Padding between the icon and the chip edge / focus highlight border.
+    pub padding: f32,
+    /// Gap between icon wrappers.
+    pub gap: f32,
+    /// Max icons shown (0 = unlimited).
+    pub max_items: usize,
+    #[serde(flatten)]
+    pub clicks: ClickActions,
+}
+
+impl Default for TaskbarConfig {
+    fn default() -> Self {
+        Self {
+            width: 20.0,
+            padding: 4.0,
+            gap: 2.0,
+            max_items: 16,
             clicks: ClickActions::default(),
         }
     }
@@ -640,7 +676,7 @@ font_size = 13.0
 font = ""
 # Font used for emoji glyphs (volume / brightness). Empty = same as font
 emoji_font = ""
-# Cava-style CPU/RAM/GPU meters
+# Realtime CPU (per-core) / RAM (fill) / GPU (per-device) meters
 meter_height = 16.0
 meter_width = 3.0
 meter_gap = 2.0
@@ -651,9 +687,9 @@ meter_bars = 8
 backend = "auto"
 
 [modules]
-# Available: workspaces, window, clock, cpu, memory, gpu, network,
+# Available: workspaces, taskbar, window, clock, cpu, memory, gpu, network,
 # brightness, volume, tray, custom:<id>
-left = ["workspaces", "window"]
+left = ["workspaces", "taskbar", "window"]
 center = ["clock"]
 right = ["cpu", "memory", "gpu", "network", "brightness", "volume", "tray"]
 # Host StatusNotifierItem tray
@@ -674,6 +710,14 @@ refresh_ms = 500
 # Optional commands for the workspaces strip:
 # on_click = "niri msg action focus-workspace-previous"
 # on_right_click = "niri msg action focus-workspace-next"
+
+[modules.taskbar]
+# Icon size (logical px). Chip / focus highlight grows with padding.
+width = 20.0
+# Space between the icon and the yellow focus border / chip edge
+padding = 4.0
+gap = 2.0
+max_items = 16
 
 [modules.window]
 # Truncate focused window title after this many characters

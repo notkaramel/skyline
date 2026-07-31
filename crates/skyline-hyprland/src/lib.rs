@@ -4,11 +4,11 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use hyprland::data::{Client, Clients, Monitor, Monitors, Workspace, Workspaces};
-use hyprland::dispatch::{Dispatch, DispatchType, WorkspaceIdentifierWithSpecial};
+use hyprland::dispatch::{Dispatch, DispatchType, WindowIdentifier, WorkspaceIdentifierWithSpecial};
 use hyprland::event_listener::EventListener;
 use hyprland::prelude::*;
-use hyprland::shared::{HyprData, HyprDataActive, HyprDataActiveOptional};
-use skyline_core::{CompositorState, ServiceEvent, WindowInfo, WorkspaceInfo};
+use hyprland::shared::{Address, HyprData, HyprDataActive, HyprDataActiveOptional};
+use skyline_core::{CompositorState, OutputInfo, ServiceEvent, WindowInfo, WorkspaceInfo};
 use tracing::warn;
 
 /// Spawn a thread that listens for Hyprland events and pushes snapshots.
@@ -97,7 +97,7 @@ fn collect_state() -> hyprland::Result<CompositorState> {
         .collect();
     workspaces.sort_by_key(|w| (w.output.clone().unwrap_or_default(), w.index));
 
-    // Mark active workspace per monitor using monitors list.
+    let mut outputs: Vec<OutputInfo> = Vec::new();
     if let Ok(monitors) = Monitors::get() {
         for mon in monitors.to_vec() {
             for ws in &mut workspaces {
@@ -107,8 +107,16 @@ fn collect_state() -> hyprland::Result<CompositorState> {
                     ws.active = true;
                 }
             }
+            outputs.push(OutputInfo {
+                name: mon.name.clone(),
+                x: mon.x,
+                y: mon.y,
+                width: mon.width as u32,
+                height: mon.height as u32,
+            });
         }
     }
+    outputs.sort_by(|a, b| (a.x, a.y).cmp(&(b.x, b.y)));
 
     let clients = Clients::get()?.to_vec();
     let focused = Client::get_active().ok().flatten();
@@ -121,8 +129,9 @@ fn collect_state() -> hyprland::Result<CompositorState> {
                 .as_ref()
                 .map(|a| a == &c.address)
                 .unwrap_or(false);
+            let addr = c.address.to_string();
             WindowInfo {
-                id: address_to_id(&c.address.to_string()),
+                id: address_to_id(&addr),
                 title: c.title,
                 app_id: Some(c.class),
                 workspace_id: Some(c.workspace.id as u64),
@@ -131,23 +140,29 @@ fn collect_state() -> hyprland::Result<CompositorState> {
                     .find(|w| w.id == c.workspace.id as u64)
                     .and_then(|w| w.output.clone()),
                 focused,
+                focus_token: addr,
             }
         })
         .collect();
 
     let focused_window = windows.iter().find(|w| w.focused).cloned().or_else(|| {
-        focused.map(|c| WindowInfo {
-            id: address_to_id(&c.address.to_string()),
-            title: c.title,
-            app_id: Some(c.class),
-            workspace_id: Some(c.workspace.id as u64),
-            output: focused_output.clone(),
-            focused: true,
+        focused.map(|c| {
+            let addr = c.address.to_string();
+            WindowInfo {
+                id: address_to_id(&addr),
+                title: c.title,
+                app_id: Some(c.class),
+                workspace_id: Some(c.workspace.id as u64),
+                output: focused_output.clone(),
+                focused: true,
+                focus_token: addr,
+            }
         })
     });
 
     Ok(CompositorState {
         focused_output,
+        outputs,
         workspaces,
         windows,
         focused_window,
@@ -167,6 +182,12 @@ fn address_to_id(addr: &str) -> u64 {
 pub fn focus_workspace(id: u64) -> hyprland::Result<()> {
     Dispatch::call(DispatchType::Workspace(WorkspaceIdentifierWithSpecial::Id(
         id as i32,
+    )))
+}
+
+pub fn focus_window(address: &str) -> hyprland::Result<()> {
+    Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Address(
+        Address::new(address),
     )))
 }
 

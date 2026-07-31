@@ -181,6 +181,32 @@ pub fn workspace_button(
     }
 }
 
+pub fn taskbar_chip_style(theme: &ThemeConfig, focused: bool) -> ContainerStyle {
+    let radius = (theme.island_radius * 0.45).clamp(4.0, 8.0);
+    ContainerStyle {
+        background: Some(Background::Color(if focused {
+            Color::from_rgba(
+                theme.accent[0],
+                theme.accent[1],
+                theme.accent[2],
+                0.22,
+            )
+        } else {
+            Color::from_rgba(1.0, 1.0, 1.0, 0.04)
+        })),
+        border: Border {
+            radius: radius.into(),
+            width: if focused { 1.0 } else { 0.0 },
+            color: if focused {
+                rgba(theme.accent)
+            } else {
+                Color::TRANSPARENT
+            },
+        },
+        ..Default::default()
+    }
+}
+
 pub fn _island_row<'a>(
     children: Vec<Element<'a, Message>>,
     gap: u16,

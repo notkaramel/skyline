@@ -3,10 +3,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SysSnapshot {
     pub cpu_percent: f32,
+    /// Per-logical-core usage (0..=100), same order as the OS.
+    #[serde(default)]
+    pub cpu_per_core: Vec<f32>,
     pub memory_percent: f32,
     pub memory_used_gb: f32,
     pub memory_total_gb: f32,
     pub gpu_percent: Option<f32>,
+    /// Per-GPU device usage (0..=100) when multiple adapters are found.
+    #[serde(default)]
+    pub gpu_per_device: Vec<f32>,
     pub gpu_label: Option<String>,
 }
 

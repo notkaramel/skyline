@@ -16,12 +16,15 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
         loop {
             sys.refresh_cpu_usage();
             sys.refresh_memory();
+            let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
             let cpu = sys.global_cpu_usage();
             let total = sys.total_memory() as f32;
             let used = sys.used_memory() as f32;
-            let (gpu_percent, gpu_label) = probe_gpu();
+            let (gpu_per_device, gpu_label) = probe_gpus();
+            let gpu_percent = gpu_per_device.first().copied();
             let snap = SysSnapshot {
                 cpu_percent: cpu,
+                cpu_per_core,
                 memory_percent: if total > 0.0 {
                     (used / total) * 100.0
                 } else {
@@ -30,6 +33,7 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
                 memory_used_gb: used / (1024.0 * 1024.0 * 1024.0),
                 memory_total_gb: total / (1024.0 * 1024.0 * 1024.0),
                 gpu_percent,
+                gpu_per_device,
                 gpu_label,
             };
             if tx.send(ServiceEvent::Sys(snap)).is_err() {
@@ -41,35 +45,45 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
     });
 }
 
-fn probe_gpu() -> (Option<f32>, Option<String>) {
-    if let Some(v) = read_amd_gpu() {
-        return (Some(v), Some("AMD".into()));
+fn probe_gpus() -> (Vec<f32>, Option<String>) {
+    let amd = read_amd_gpus();
+    if !amd.is_empty() {
+        return (amd, Some("AMD".into()));
     }
-    if let Some(v) = read_nvidia_gpu() {
-        return (Some(v), Some("NVIDIA".into()));
+    let nvidia = read_nvidia_gpus();
+    if !nvidia.is_empty() {
+        return (nvidia, Some("NVIDIA".into()));
     }
-    if let Some(v) = read_intel_gpu() {
-        return (Some(v), Some("Intel".into()));
+    let intel = read_intel_gpu();
+    if let Some(v) = intel {
+        return (vec![v], Some("Intel".into()));
     }
-    (None, None)
+    (Vec::new(), None)
 }
 
-fn read_amd_gpu() -> Option<f32> {
-    let entries = fs::read_dir("/sys/class/drm").ok()?;
+fn read_amd_gpus() -> Vec<f32> {
+    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
     for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Prefer cardN (skip renderD* / cardN-*)
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
         let path = entry.path().join("device/gpu_busy_percent");
-        if path.exists() {
-            if let Ok(s) = fs::read_to_string(&path) {
-                if let Ok(v) = s.trim().parse::<f32>() {
-                    return Some(v);
-                }
+        if let Ok(s) = fs::read_to_string(&path) {
+            if let Ok(v) = s.trim().parse::<f32>() {
+                values.push(v);
             }
         }
     }
-    None
+    values
 }
 
-fn read_nvidia_gpu() -> Option<f32> {
+fn read_nvidia_gpus() -> Vec<f32> {
     // Prefer nvidia-smi when NVML isn't linked; keep it optional.
     let output = std::process::Command::new("nvidia-smi")
         .args([
@@ -77,12 +91,17 @@ fn read_nvidia_gpu() -> Option<f32> {
             "--format=csv,noheader,nounits",
         ])
         .output()
-        .ok()?;
+        .ok();
+    let Some(output) = output else {
+        return Vec::new();
+    };
     if !output.status.success() {
-        return None;
+        return Vec::new();
     }
     let s = String::from_utf8_lossy(&output.stdout);
-    s.lines().next()?.trim().parse().ok()
+    s.lines()
+        .filter_map(|line| line.trim().parse::<f32>().ok())
+        .collect()
 }
 
 fn read_intel_gpu() -> Option<f32> {

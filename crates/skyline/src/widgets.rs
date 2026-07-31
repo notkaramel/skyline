@@ -1,13 +1,12 @@
-use std::collections::VecDeque;
 use std::env;
 use std::path::{Path, PathBuf};
 
-use iced::widget::{button, container, image, mouse_area, row, space, text, Column};
+use iced::widget::{button, container, image, mouse_area, row, space, svg, text, Column};
 use iced::widget::container::Style as ContainerStyle;
 use iced::{Background, Border, Color, Element, Length};
 use skyline_core::{
-    ClickActions, CompositorState, ModuleKind, ThemeConfig, TrayItemSnapshot, TrayMenuSnapshot,
-    TrayPixmap,
+    ClickActions, CompositorState, ModuleKind, TaskbarConfig, ThemeConfig, TrayItemSnapshot,
+    TrayMenuSnapshot, TrayPixmap, WindowInfo,
 };
 
 use crate::app::Message;
@@ -46,10 +45,149 @@ pub fn workspaces<'a>(
         .into()
 }
 
-/// Cava-style vertical meter from a history of 0..=100 samples.
-pub fn cava_meter<'a>(
+pub fn taskbar<'a>(
+    state: &'a CompositorState,
+    output: Option<&str>,
+    theme: &'a ThemeConfig,
+    cfg: &'a TaskbarConfig,
+) -> Element<'a, Message> {
+    let mut windows = state.taskbar_windows(output);
+    if cfg.max_items > 0 && windows.len() > cfg.max_items {
+        windows.truncate(cfg.max_items);
+    }
+    if windows.is_empty() {
+        return space::Space::new().width(0).into();
+    }
+
+    let icon = cfg.width.max(8.0);
+    let pad = cfg.padding.max(0.0);
+    let gap = cfg.gap.max(0.0);
+    let buttons = windows
+        .into_iter()
+        .map(|win| taskbar_chip(win, theme, icon, pad));
+
+    // Shrink-wrapped row of icon chips (Waybar-style).
+    container(
+        row(buttons)
+            .spacing(gap)
+            .align_y(iced::Alignment::Center),
+    )
+    .width(Length::Shrink)
+    .into()
+}
+
+fn taskbar_chip<'a>(
+    win: &'a WindowInfo,
+    theme: &'a ThemeConfig,
+    icon: f32,
+    pad: f32,
+) -> Element<'a, Message> {
+    let focused = win.focused;
+    // Real container padding so the focus border sits outside the icon inset.
+    let chip = container(window_icon_el(win, theme, icon))
+        .padding(pad)
+        .style(move |_| style::taskbar_chip_style(theme, focused));
+
+    mouse_area(chip)
+        .on_press(Message::FocusWindow(win.id))
+        .into()
+}
+
+fn window_icon_el<'a>(
+    win: &'a WindowInfo,
+    theme: &'a ThemeConfig,
+    icon_size: f32,
+) -> Element<'a, Message> {
+    if let Some(path) = window_icon_path(win) {
+        let is_svg = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+        if is_svg {
+            return svg(svg::Handle::from_path(path))
+                .width(Length::Fixed(icon_size))
+                .height(Length::Fixed(icon_size))
+                .into();
+        }
+        return image(iced::widget::image::Handle::from_path(path))
+            .width(Length::Fixed(icon_size))
+            .height(Length::Fixed(icon_size))
+            .into();
+    }
+
+    let letter = win
+        .app_id
+        .as_deref()
+        .or(Some(win.title.as_str()))
+        .and_then(|s| s.chars().find(|c| c.is_alphanumeric()))
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".into());
+    container(
+        text(letter)
+            .size((icon_size * 0.7).max(10.0))
+            .font(style::ui_font(theme))
+            .color(style::rgba(if win.focused {
+                theme.text
+            } else {
+                theme.muted
+            })),
+    )
+    .width(Length::Fixed(icon_size))
+    .height(Length::Fixed(icon_size))
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .into()
+}
+
+fn window_icon_path(win: &WindowInfo) -> Option<PathBuf> {
+    let mut names: Vec<String> = Vec::new();
+    if let Some(app_id) = win.app_id.as_deref() {
+        names.push(app_id.to_string());
+        names.push(app_id.to_lowercase());
+        if let Some(short) = app_id.rsplit('.').next() {
+            if short.len() > 1 {
+                names.push(short.to_string());
+                names.push(short.to_lowercase());
+            }
+        }
+        if let Some(icon) = desktop_icon_name(app_id) {
+            names.push(icon.clone());
+            names.push(icon.to_lowercase());
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| !n.is_empty() && seen.insert(n.to_lowercase()));
+
+    for name in &names {
+        if let Some(path) = resolve_icon_path(name, None) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// LED-style fill of `bars` columns from a single 0..=100 usage value.
+pub fn usage_fill_segments(percent: f32, bars: usize) -> Vec<f32> {
+    let bars = bars.max(1);
+    let level = (percent.clamp(0.0, 100.0) / 100.0) * bars as f32;
+    (0..bars)
+        .map(|i| {
+            let i = i as f32;
+            if level >= i + 1.0 {
+                100.0
+            } else if level > i {
+                ((level - i) * 100.0).clamp(0.0, 100.0)
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// Real-time vertical usage meter: one bar per sample (cores / devices / …).
+pub fn usage_meter<'a>(
     default_label: &'a str,
-    history: &'a VecDeque<f32>,
+    samples: &[f32],
     current: f32,
     theme: &'a ThemeConfig,
     meter: &'a skyline_core::MeterClickConfig,
@@ -65,7 +203,6 @@ pub fn cava_meter<'a>(
         meter.format.as_str()
     };
 
-    let bars = theme.meter_bars.max(1) as usize;
     let height = theme.meter_height.max(4.0);
     let bar_w = theme.meter_width.max(1.0);
     let gap = theme.meter_gap.max(0.0);
@@ -73,22 +210,24 @@ pub fn cava_meter<'a>(
     let track = Color::from_rgba(1.0, 1.0, 1.0, 0.10);
     let ui_font = style::ui_font(theme);
 
-    let mut samples: Vec<f32> = history.iter().copied().collect();
-    while samples.len() < bars {
-        samples.insert(0, 0.0);
-    }
-    if samples.len() > bars {
-        samples = samples[samples.len() - bars..].to_vec();
-    }
-    if let Some(last) = samples.last_mut() {
-        *last = current.clamp(0.0, 100.0);
-    }
+    let samples: Vec<f32> = if samples.is_empty() {
+        vec![current.clamp(0.0, 100.0)]
+    } else {
+        samples
+            .iter()
+            .copied()
+            .map(|v| v.clamp(0.0, 100.0))
+            .collect()
+    };
 
-    let bar_row = |samples: &[f32]| -> Element<'a, Message> {
-        let columns = samples.iter().copied().enumerate().map(|(i, v)| {
-            let t = (v / 100.0).clamp(0.05, 1.0);
-            let age = 1.0 - (bars.saturating_sub(i + 1) as f32) * 0.04;
-            let fill_h = (height * t * age).max(2.0);
+    let build_bars = || -> Element<'a, Message> {
+        let columns = samples.iter().copied().map(|v| {
+            let t = (v / 100.0).clamp(0.0, 1.0);
+            let fill_h = if t <= f32::EPSILON {
+                0.0
+            } else {
+                (height * t).max(2.0)
+            };
             let bar = container(space::Space::new())
                 .width(bar_w)
                 .height(fill_h)
@@ -132,7 +271,7 @@ pub fn cava_meter<'a>(
                     .color(style::rgba(theme.muted))
                     .into(),
             ),
-            MeterPart::Bar => children.push(bar_row(&samples)),
+            MeterPart::Bar => children.push(build_bars()),
             MeterPart::Percent => children.push(style::percent_slot(
                 f64::from(current),
                 theme,
@@ -484,7 +623,10 @@ fn tray_handle(item: &TrayItemSnapshot) -> Option<iced::widget::image::Handle> {
 
     for name in names.iter().filter(|n| !n.is_empty()) {
         if let Some(path) = resolve_icon_path(name, item.icon_theme_path.as_deref()) {
-            return Some(iced::widget::image::Handle::from_path(path));
+            // Tray uses the image widget — skip SVG paths here.
+            if is_raster(&path) {
+                return Some(iced::widget::image::Handle::from_path(path));
+            }
         }
     }
 
@@ -498,7 +640,9 @@ fn tray_handle(item: &TrayItemSnapshot) -> Option<iced::widget::image::Handle> {
     for key in [&item.app_id, &item.title] {
         if let Some(icon) = desktop_icon_name(key) {
             if let Some(path) = resolve_icon_path(&icon, item.icon_theme_path.as_deref()) {
-                return Some(iced::widget::image::Handle::from_path(path));
+                if is_raster(&path) {
+                    return Some(iced::widget::image::Handle::from_path(path));
+                }
             }
         }
     }
@@ -536,12 +680,12 @@ fn resolve_icon_path(name: &str, theme_path: Option<&str>) -> Option<PathBuf> {
     // Absolute / relative file path.
     if name.contains('/') {
         let p = PathBuf::from(name);
-        if is_raster(&p) && p.exists() {
+        if is_icon_file(&p) && p.exists() {
             return Some(p);
         }
         if let Some(theme) = theme_path {
             let joined = PathBuf::from(theme).join(name);
-            if is_raster(&joined) && joined.exists() {
+            if is_icon_file(&joined) && joined.exists() {
                 return Some(joined);
             }
         }
@@ -553,14 +697,14 @@ fn resolve_icon_path(name: &str, theme_path: Option<&str>) -> Option<PathBuf> {
             return Some(p);
         }
         // Sometimes IconThemePath is a single flat directory of icons.
-        for ext in RASTER_EXTS {
+        for ext in ICON_EXTS {
             let p = Path::new(theme).join(format!("{name}.{ext}"));
             if p.exists() {
                 return Some(p);
             }
         }
         let bare = Path::new(theme).join(name);
-        if is_raster(&bare) && bare.exists() {
+        if is_icon_file(&bare) && bare.exists() {
             return Some(bare);
         }
     }
@@ -578,7 +722,7 @@ fn resolve_icon_path(name: &str, theme_path: Option<&str>) -> Option<PathBuf> {
 
     for root in &roots {
         if root.ends_with("pixmaps") {
-            for ext in RASTER_EXTS {
+            for ext in ICON_EXTS {
                 let p = root.join(format!("{name}.{ext}"));
                 if p.exists() {
                     return Some(p);
@@ -594,6 +738,7 @@ fn resolve_icon_path(name: &str, theme_path: Option<&str>) -> Option<PathBuf> {
 }
 
 const RASTER_EXTS: &[&str] = &["png", "xpm", "jpg", "jpeg", "webp"];
+const ICON_EXTS: &[&str] = &["png", "svg", "xpm", "jpg", "jpeg", "webp"];
 const THEME_NAMES: &[&str] = &[
     "hicolor",
     "Adwaita",
@@ -608,8 +753,8 @@ const SIZES: &[&str] = &[
     "24x24", "22x22", "32x32", "48x48", "16x16", "64x64", "128x128", "scalable",
 ];
 const CATS: &[&str] = &[
-    "status",
     "apps",
+    "status",
     "devices",
     "panel",
     "categories",
@@ -626,6 +771,12 @@ fn is_raster(path: &Path) -> bool {
                 .iter()
                 .any(|r| ext.eq_ignore_ascii_case(r))
         })
+}
+
+fn is_icon_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ICON_EXTS.iter().any(|r| ext.eq_ignore_ascii_case(r)))
 }
 
 fn find_in_icons_dir(root: &Path, name: &str) -> Option<PathBuf> {
@@ -648,7 +799,7 @@ fn find_in_theme_root(theme_root: &Path, name: &str) -> Option<PathBuf> {
     }
     for size in SIZES {
         for cat in CATS {
-            for ext in RASTER_EXTS {
+            for ext in ICON_EXTS {
                 let p = theme_root
                     .join(size)
                     .join(cat)
@@ -659,8 +810,7 @@ fn find_in_theme_root(theme_root: &Path, name: &str) -> Option<PathBuf> {
             }
         }
     }
-    // index.theme-less flat / recursive shallow search for raster files.
-    for ext in RASTER_EXTS {
+    for ext in ICON_EXTS {
         let p = theme_root.join(format!("{name}.{ext}"));
         if p.exists() {
             return Some(p);

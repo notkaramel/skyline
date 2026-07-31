@@ -6,7 +6,7 @@ use std::thread;
 use niri_ipc::socket::Socket;
 use niri_ipc::state::{EventStreamState, EventStreamStatePart};
 use niri_ipc::{Request, Response};
-use skyline_core::{CompositorState, ServiceEvent, WindowInfo, WorkspaceInfo};
+use skyline_core::{CompositorState, OutputInfo, ServiceEvent, WindowInfo, WorkspaceInfo};
 use tracing::{debug, error, warn};
 
 /// Spawn a blocking thread that streams niri events into `tx`.
@@ -22,6 +22,7 @@ pub fn spawn(tx: std::sync::mpsc::Sender<ServiceEvent>) {
 }
 
 fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
+    let mut outputs = fetch_outputs();
     let mut socket = Socket::connect()?;
     let reply = socket.send(Request::EventStream)?;
     match reply {
@@ -37,8 +38,8 @@ fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
 
     let mut state = EventStreamState::default();
     let mut read_event = socket.read_events();
+    let mut events_since_output_refresh = 0u32;
 
-    // Push initial empty then updates as events arrive.
     loop {
         let event = match read_event() {
             Ok(ev) => ev,
@@ -49,7 +50,13 @@ fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
         };
         debug!(?event, "niri event");
         state.apply(event);
-        let snapshot = snapshot_from_state(&state);
+        events_since_output_refresh += 1;
+        // Outputs rarely change; refresh occasionally so hotplug is picked up.
+        if events_since_output_refresh >= 64 || outputs.is_empty() {
+            outputs = fetch_outputs();
+            events_since_output_refresh = 0;
+        }
+        let snapshot = snapshot_from_state(&state, &outputs);
         if tx.send(ServiceEvent::Compositor(snapshot)).is_err() {
             break;
         }
@@ -57,7 +64,34 @@ fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn snapshot_from_state(state: &EventStreamState) -> CompositorState {
+fn fetch_outputs() -> Vec<OutputInfo> {
+    let Ok(mut socket) = Socket::connect() else {
+        return Vec::new();
+    };
+    let Ok(reply) = socket.send(Request::Outputs) else {
+        return Vec::new();
+    };
+    let Ok(Response::Outputs(map)) = reply else {
+        return Vec::new();
+    };
+    let mut outs: Vec<OutputInfo> = map
+        .into_iter()
+        .filter_map(|(name, out)| {
+            let logical = out.logical?;
+            Some(OutputInfo {
+                name,
+                x: logical.x,
+                y: logical.y,
+                width: logical.width,
+                height: logical.height,
+            })
+        })
+        .collect();
+    outs.sort_by(|a, b| (a.x, a.y).cmp(&(b.x, b.y)));
+    outs
+}
+
+fn snapshot_from_state(state: &EventStreamState, outputs: &[OutputInfo]) -> CompositorState {
     let mut workspaces: Vec<WorkspaceInfo> = state
         .workspaces
         .workspaces
@@ -96,6 +130,7 @@ fn snapshot_from_state(state: &EventStreamState) -> CompositorState {
                 workspace_id: win.workspace_id,
                 output,
                 focused: win.is_focused,
+                focus_token: win.id.to_string(),
             }
         })
         .collect();
@@ -112,6 +147,7 @@ fn snapshot_from_state(state: &EventStreamState) -> CompositorState {
 
     CompositorState {
         focused_output,
+        outputs: outputs.to_vec(),
         workspaces,
         windows,
         focused_window,
@@ -124,6 +160,13 @@ pub fn focus_workspace(id: u64) -> std::io::Result<()> {
     let _ = socket.send(Request::Action(niri_ipc::Action::FocusWorkspace {
         reference: niri_ipc::WorkspaceReferenceArg::Id(id),
     }))?;
+    Ok(())
+}
+
+/// Focus a niri window by id.
+pub fn focus_window(id: u64) -> std::io::Result<()> {
+    let mut socket = Socket::connect()?;
+    let _ = socket.send(Request::Action(niri_ipc::Action::FocusWindow { id }))?;
     Ok(())
 }
 

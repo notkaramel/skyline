@@ -50,9 +50,9 @@ meter_bars = 8
 backend = "auto"
 
 [modules]
-# Available: workspaces, window, clock, cpu, memory, gpu, network,
+# Available: workspaces, taskbar, window, clock, cpu, memory, gpu, network,
 # brightness, volume, tray, custom:<id>
-left = ["workspaces", "window"]
+left = ["workspaces", "taskbar", "window"]
 center = ["clock"]
 right = ["cpu", "memory", "gpu", "network", "brightness", "volume", "tray"]
 # Host StatusNotifierItem tray
@@ -73,6 +73,14 @@ refresh_ms = 500
 # Optional commands for the workspaces strip:
 # on_click = "niri msg action focus-workspace-previous"
 # on_right_click = "niri msg action focus-workspace-next"
+
+[modules.taskbar]
+# Icon size (logical px). Chip / focus highlight grows with padding.
+width = 20.0
+# Space between the icon and the yellow focus border / chip edge
+padding = 4.0
+gap = 2.0
+max_items = 16
 
 [modules.window]
 # Truncate focused window title after this many characters

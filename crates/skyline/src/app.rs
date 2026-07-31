@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -15,14 +15,13 @@ use iced_layershell::reexport::{
 use iced_layershell::to_layer_message;
 use skyline_core::{
     BrightnessSnapshot, CompositorState, Config, CustomSnapshot, ModuleKind, NetworkSnapshot,
-    ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuSnapshot, VolumeSnapshot,
+    OutputInfo, ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuSnapshot, VolumeSnapshot,
 };
 use tracing::{info, warn};
 
 use crate::style;
 use crate::widgets;
 
-const METER_HISTORY: usize = 16;
 /// Quiet window before applying coalesced scroll deltas (trackpad-friendly).
 const SCROLL_DEBOUNCE: Duration = Duration::from_millis(70);
 /// Cap how far one commit can jump so a scroll burst stays controllable.
@@ -43,13 +42,10 @@ pub struct App {
     tray_items: Vec<TrayItemSnapshot>,
     tray_menu: Option<TrayMenuSnapshot>,
     popup_ids: HashMap<Id, PopupKind>,
-    /// Layer-shell surfaces that are the status bar (not tray popups).
-    bar_ids: Mutex<HashSet<Id>>,
+    /// Layer-shell bar surfaces and the output each is pinned to.
+    bar_outputs: Mutex<HashMap<Id, String>>,
     bound_output: Option<String>,
     errors: Vec<String>,
-    cpu_history: VecDeque<f32>,
-    mem_history: VecDeque<f32>,
-    gpu_history: VecDeque<f32>,
     volume_pending: f64,
     volume_last_input: Option<Instant>,
     brightness_pending: f64,
@@ -71,6 +67,7 @@ pub enum Message {
     ServicePoll,
     ScrollDebounce,
     FocusWorkspace(u64),
+    FocusWindow(u64),
     VolumeScroll(f64),
     VolumeToggleMute,
     BrightnessScroll(f64),
@@ -82,6 +79,7 @@ pub enum Message {
     ClockHover(bool),
     ClosePopup(Id),
     PointerPressed { window: Id },
+    BarOpened { id: Id, width: Option<f32> },
     IcedEvent(Event),
     WindowClosed(Id),
 }
@@ -108,12 +106,9 @@ impl App {
                 tray_items: Vec::new(),
                 tray_menu: None,
                 popup_ids: HashMap::new(),
-                bar_ids: Mutex::new(HashSet::new()),
+                bar_outputs: Mutex::new(HashMap::new()),
                 bound_output,
                 errors: Vec::new(),
-                cpu_history: VecDeque::with_capacity(METER_HISTORY),
-                mem_history: VecDeque::with_capacity(METER_HISTORY),
-                gpu_history: VecDeque::with_capacity(METER_HISTORY),
                 volume_pending: 0.0,
                 volume_last_input: None,
                 brightness_pending: 0.0,
@@ -139,6 +134,12 @@ impl App {
                 Event::Mouse(mouse::Event::ButtonPressed(_)) => {
                     Some(Message::PointerPressed { window: id })
                 }
+                Event::Window(iced::window::Event::Opened { size, .. }) => Some(
+                    Message::BarOpened {
+                        id,
+                        width: Some(size.width),
+                    },
+                ),
                 _ => None,
             }),
             iced::window::close_events().map(Message::WindowClosed),
@@ -177,6 +178,25 @@ impl App {
                     .click_command(&ModuleKind::Workspaces, false)
                 {
                     skyline_services::run_click(cmd);
+                }
+                Task::none()
+            }
+            Message::FocusWindow(id) => {
+                if let Some(win) = self.compositor.windows.iter().find(|w| w.id == id) {
+                    if skyline_niri::is_available() {
+                        if let Err(err) = skyline_niri::focus_window(win.id) {
+                            warn!("niri focus window: {err}");
+                        }
+                    } else if skyline_hyprland::is_available() {
+                        let token = if win.focus_token.is_empty() {
+                            win.id.to_string()
+                        } else {
+                            win.focus_token.clone()
+                        };
+                        if let Err(err) = skyline_hyprland::focus_window(&token) {
+                            warn!("hyprland focus window: {err}");
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -246,17 +266,129 @@ impl App {
             }
             Message::WindowClosed(id) => {
                 self.popup_ids.remove(&id);
-                if let Ok(mut ids) = self.bar_ids.lock() {
-                    ids.remove(&id);
+                if let Ok(mut map) = self.bar_outputs.lock() {
+                    map.remove(&id);
                 }
                 if self.popup_ids.is_empty() {
                     self.tray_menu = None;
                 }
                 Task::none()
             }
+            Message::BarOpened { id, width } => {
+                if !self.popup_ids.contains_key(&id) {
+                    self.pin_bar_output(id, width);
+                }
+                Task::none()
+            }
             Message::IcedEvent(_event) => Task::none(),
             _ => Task::none(),
         }
+    }
+
+    /// Pin a bar surface to a monitor so taskbar/workspaces stay on that output
+    /// even when keyboard/mouse focus is elsewhere.
+    ///
+    /// iced_layershell always reports `Opened` with `position: None`, so we match
+    /// the layer surface width to each output's logical width when possible.
+    fn pin_bar_output(&self, id: Id, width: Option<f32>) {
+        if self.bound_output.is_some() {
+            return;
+        }
+        let Ok(mut map) = self.bar_outputs.lock() else {
+            return;
+        };
+        let used: HashSet<String> = map
+            .iter()
+            .filter(|(k, _)| **k != id)
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        if let Some(w) = width {
+            let mut matches: Vec<&OutputInfo> = self
+                .compositor
+                .outputs
+                .iter()
+                .filter(|o| !used.contains(&o.name))
+                .filter(|o| (o.width as f32 - w).abs() < 2.0)
+                .collect();
+            matches.sort_by_key(|o| (o.x, o.y));
+            if let Some(out) = matches.first() {
+                map.insert(id, out.name.clone());
+                return;
+            }
+            // Soft match: closest unused width (helps fractional scaling quirks).
+            let mut by_delta: Vec<_> = self
+                .compositor
+                .outputs
+                .iter()
+                .filter(|o| !used.contains(&o.name))
+                .map(|o| ((o.width as f32 - w).abs(), o))
+                .collect();
+            by_delta.sort_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, out)) = by_delta.first() {
+                if by_delta[0].0 < 64.0 {
+                    map.insert(id, out.name.clone());
+                    return;
+                }
+            }
+        }
+
+        if map.contains_key(&id) {
+            return;
+        }
+        let mut available: Vec<String> = self
+            .compositor
+            .output_names()
+            .into_iter()
+            .filter(|n| !used.contains(n))
+            .collect();
+        // Prefer geometry order so multi-monitor assignment is stable.
+        if !self.compositor.outputs.is_empty() {
+            available = self
+                .compositor
+                .outputs
+                .iter()
+                .filter(|o| !used.contains(&o.name))
+                .map(|o| o.name.clone())
+                .collect();
+        } else {
+            available.sort();
+        }
+        if let Some(name) = available.into_iter().next() {
+            map.insert(id, name);
+        }
+    }
+
+    fn refresh_bar_output_pins(&self) {
+        if self.bound_output.is_some() {
+            return;
+        }
+        let names = self.compositor.output_names();
+        if names.is_empty() {
+            return;
+        }
+        let Ok(mut map) = self.bar_outputs.lock() else {
+            return;
+        };
+        // Drop pins to outputs that disappeared; bars re-pin on next view/open.
+        map.retain(|_, out| names.iter().any(|n| n == out));
+    }
+
+    fn output_for_bar(&self, id: Id) -> Option<String> {
+        if let Some(o) = &self.bound_output {
+            return Some(o.clone());
+        }
+        if let Ok(map) = self.bar_outputs.lock() {
+            if let Some(o) = map.get(&id) {
+                return Some(o.clone());
+            }
+        }
+        // First paint before Opened: assign an unused output.
+        self.pin_bar_output(id, None);
+        self.bar_outputs
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&id).cloned())
     }
 
     fn close_tray_popups(&mut self) -> Task<Message> {
@@ -361,9 +493,9 @@ impl App {
         let margin = self.config.bar.margin;
         let exclusive = self.config.bar.exclusive_zone;
         let ids: Vec<Id> = self
-            .bar_ids
+            .bar_outputs
             .lock()
-            .map(|s| s.iter().copied().collect())
+            .map(|m| m.keys().copied().collect())
             .unwrap_or_default();
 
         let mut tasks = Vec::with_capacity(ids.len() * 4);
@@ -488,14 +620,10 @@ impl App {
             }
             ServiceEvent::Compositor(state) => {
                 self.compositor = state;
+                self.refresh_bar_output_pins();
                 None
             }
             ServiceEvent::Sys(s) => {
-                push_meter(&mut self.cpu_history, s.cpu_percent);
-                push_meter(&mut self.mem_history, s.memory_percent);
-                if let Some(gpu) = s.gpu_percent {
-                    push_meter(&mut self.gpu_history, gpu);
-                }
                 self.sys = s;
                 None
             }
@@ -622,14 +750,10 @@ impl App {
             None => {}
         }
 
-        if let Ok(mut ids) = self.bar_ids.lock() {
-            ids.insert(id);
-        }
-
-        let output = self
-            .bound_output
-            .as_deref()
-            .or(self.compositor.focused_output.as_deref());
+        // Pin this bar to a specific monitor (not whichever has focus).
+        self.pin_bar_output(id, None);
+        let output = self.output_for_bar(id);
+        let output = output.as_deref();
 
         let left = self.island(&self.config.modules.left, output);
         let center = self.island(&self.config.modules.center, output);
@@ -704,6 +828,21 @@ impl App {
                 strip.on_click = None;
                 Some(widgets::with_clicks(ws, ModuleKind::Workspaces, &strip))
             }
+            ModuleKind::Taskbar => {
+                let wins = self
+                    .compositor
+                    .taskbar_windows(output);
+                if wins.is_empty() {
+                    None
+                } else {
+                    Some(widgets::taskbar(
+                        &self.compositor,
+                        output,
+                        &self.config.theme,
+                        &self.config.modules.taskbar,
+                    ))
+                }
+            }
             ModuleKind::Window => {
                 let title = self
                     .compositor
@@ -746,25 +885,30 @@ impl App {
                     )
                 }
             }
-            ModuleKind::Cpu => Some(widgets::cava_meter(
+            ModuleKind::Cpu => Some(widgets::usage_meter(
                 "cpu",
-                &self.cpu_history,
+                &self.sys.cpu_per_core,
                 self.sys.cpu_percent,
                 &self.config.theme,
                 &self.config.modules.cpu,
             )),
-            ModuleKind::Memory => Some(widgets::cava_meter(
-                "ram",
-                &self.mem_history,
-                self.sys.memory_percent,
-                &self.config.theme,
-                &self.config.modules.memory,
-            )),
+            ModuleKind::Memory => {
+                let bars = self.config.theme.meter_bars.max(1) as usize;
+                let segments =
+                    widgets::usage_fill_segments(self.sys.memory_percent, bars);
+                Some(widgets::usage_meter(
+                    "ram",
+                    &segments,
+                    self.sys.memory_percent,
+                    &self.config.theme,
+                    &self.config.modules.memory,
+                ))
+            }
             ModuleKind::Gpu => {
                 let value = self.sys.gpu_percent.unwrap_or(0.0);
-                Some(widgets::cava_meter(
+                Some(widgets::usage_meter(
                     "gpu",
-                    &self.gpu_history,
+                    &self.sys.gpu_per_device,
                     value,
                     &self.config.theme,
                     &self.config.modules.gpu,
@@ -884,18 +1028,12 @@ impl App {
             ModuleKind::Volume
             | ModuleKind::Brightness
             | ModuleKind::Workspaces
+            | ModuleKind::Taskbar
             | ModuleKind::Tray
             | ModuleKind::Clock
             | ModuleKind::Custom(_) => Some(el),
             other => Some(widgets::with_clicks(el, other.clone(), &clicks)),
         }
-    }
-}
-
-fn push_meter(history: &mut VecDeque<f32>, value: f32) {
-    history.push_back(value.clamp(0.0, 100.0));
-    while history.len() > METER_HISTORY {
-        history.pop_front();
     }
 }
 
