@@ -15,6 +15,8 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        // Must not parse EXAMPLE_TOML here: `#[serde(default)]` on Config calls
+        // `Config::default()` while deserializing, which would recurse forever.
         Self {
             bar: BarConfig::default(),
             theme: ThemeConfig::default(),
@@ -52,16 +54,16 @@ pub struct BarConfig {
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
-            height: 34,
-            margin: [8, 12, 0, 12],
-            exclusive_zone: 0,
+            height: 39,
+            margin: [0, 0, 0, 0],
+            exclusive_zone: 38,
             anchor: "top".into(),
             output: None,
-            padding: 4,
+            padding: 3,
             island_gap: 10,
             separators: true,
             separator: "│".into(),
-            tray_menu_gap: 4,
+            tray_menu_gap: 0,
         }
     }
 }
@@ -99,8 +101,7 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
-            // Transparent chrome — islands carry the dark pastel look.
-            background: [0.0, 0.0, 0.0, 0.0],
+            background: [0.08, 0.07, 0.04, 0.28],
             // Warm charcoal with a soft yellow undertone
             island_background: [0.14, 0.12, 0.08, 0.94],
             // Buttercream
@@ -113,16 +114,16 @@ impl Default for ThemeConfig {
             danger: [0.90, 0.62, 0.52, 1.0],
             // Dim honey separator
             separator: [0.42, 0.38, 0.26, 0.50],
-            island_radius: 14.0,
-            island_padding: [4, 10],
+            island_radius: 8.0,
+            island_padding: [4, 8],
             island_margin: [0, 0],
-            font_size: 13.0,
-            font: String::new(),
-            emoji_font: String::new(),
+            font_size: 14.0,
+            font: "Georgia".into(),
+            emoji_font: "Noto Color Emoji".into(),
             meter_height: 16.0,
-            meter_width: 3.0,
-            meter_gap: 2.0,
-            meter_bars: 8,
+            meter_width: 5.0,
+            meter_gap: 1.6,
+            meter_bars: 16,
         }
     }
 }
@@ -154,13 +155,13 @@ impl Default for ModulesConfig {
             left: vec![ModuleKind::Workspaces, ModuleKind::Taskbar, ModuleKind::Window],
             center: vec![ModuleKind::Clock],
             right: vec![
+                ModuleKind::Tray,
                 ModuleKind::Cpu,
                 ModuleKind::Memory,
                 ModuleKind::Gpu,
                 ModuleKind::Network,
                 ModuleKind::Brightness,
                 ModuleKind::Volume,
-                ModuleKind::Tray,
             ],
             clock: ClockConfig::default(),
             custom: vec![],
@@ -171,9 +172,27 @@ impl Default for ModulesConfig {
             network: NetworkConfig::default(),
             workspaces: WorkspacesConfig::default(),
             taskbar: TaskbarConfig::default(),
-            cpu: MeterClickConfig::default(),
-            memory: MeterClickConfig::default(),
-            gpu: MeterClickConfig::default(),
+            cpu: MeterClickConfig {
+                label: "CPU".into(),
+                format: "{label} {bar}".into(),
+                clicks: ClickActions {
+                    on_click: Some("alacritty -e btop".into()),
+                    on_right_click: None,
+                },
+            },
+            memory: MeterClickConfig {
+                label: "RAM".into(),
+                format: "{label} {bar}".into(),
+                clicks: ClickActions::default(),
+            },
+            gpu: MeterClickConfig {
+                label: "GPU".into(),
+                format: "{label} {bar}".into(),
+                clicks: ClickActions {
+                    on_click: Some("alacritty -e amdgpu_top".into()),
+                    on_right_click: None,
+                },
+            },
             tray: true,
         }
     }
@@ -350,7 +369,10 @@ impl Default for VolumeConfig {
             detect_bluetooth: true,
             show_device: false,
             show_percent: true,
-            clicks: ClickActions::default(),
+            clicks: ClickActions {
+                on_click: Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into()),
+                on_right_click: Some("pwvucontrol".into()),
+            },
         }
     }
 }
@@ -387,7 +409,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            max_chars: 42,
+            max_chars: 120,
             clicks: ClickActions::default(),
         }
     }
@@ -409,7 +431,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            show_strength: true,
+            show_strength: false,
             show_name: true,
             max_chars: 24,
             clicks: ClickActions::default(),
@@ -429,7 +451,7 @@ pub struct ClockConfig {
 impl Default for ClockConfig {
     fn default() -> Self {
         Self {
-            format: "%a %b %d  %I:%M %p".into(),
+            format: "%a %b %d ☀️ %I:%M %p".into(),
             tooltip_format: "%Y-%m-%d %I:%M:%S %p".into(),
             clicks: ClickActions::default(),
         }
@@ -471,10 +493,10 @@ pub struct TaskbarConfig {
 impl Default for TaskbarConfig {
     fn default() -> Self {
         Self {
-            width: 20.0,
-            padding: 4.0,
-            gap: 2.0,
-            max_items: 16,
+            width: 24.0,
+            padding: 2.0,
+            gap: 4.0,
+            max_items: 12,
             clicks: ClickActions::default(),
         }
     }
@@ -497,7 +519,7 @@ impl Default for MeterClickConfig {
     fn default() -> Self {
         Self {
             label: String::new(),
-            format: "{label} {bar} {percent}".into(),
+            format: "{label} {bar}".into(),
             clicks: ClickActions::default(),
         }
     }
@@ -531,7 +553,7 @@ pub struct SysConfig {
 
 impl Default for SysConfig {
     fn default() -> Self {
-        Self { refresh_ms: 500 }
+        Self { refresh_ms: 1000 }
     }
 }
 
@@ -566,8 +588,13 @@ impl Config {
         if path.exists() {
             Self::load(&path)
         } else {
-            Ok(Self::default())
+            Ok(Self::from_example_toml())
         }
+    }
+
+    /// Full annotated defaults from `examples/config.toml`.
+    pub fn from_example_toml() -> Self {
+        toml::from_str(EXAMPLE_TOML).expect("embedded default config is valid TOML")
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -632,151 +659,4 @@ fn migrate_legacy_module_keys(raw: &str) -> String {
     out
 }
 
-const EXAMPLE_TOML: &str = r#"# Skyline configuration (~/.config/skyline/config.toml)
-# All keys are shown with their defaults (except exclusive_zone, which is
-# commonly set higher so windows clear the bar).
-
-[bar]
-# Bar height in logical pixels
-height = 34
-# Layer margin: top, right, bottom, left
-margin = [8, 12, 0, 12]
-# Compositor exclusive zone (0 = float over windows)
-exclusive_zone = 54
-# "top" or "bottom"
-anchor = "top"
-# Optional Wayland output name; omit / comment to use all screens
-# output = "DP-1"
-# Inner padding of the bar surface
-padding = 4
-# Gap between left / center / right islands
-island_gap = 10
-# Draw separators between modules inside each island
-separators = true
-separator = "│"
-# Pixels between the bar bottom and a tray right-click menu
-tray_menu_gap = 4
-
-[theme]
-# Soft yellow pastel on dark — colors are RGBA floats in 0..=1
-background = [0.0, 0.0, 0.0, 0.0]
-island_background = [0.14, 0.12, 0.08, 0.94]
-text = [0.97, 0.94, 0.84, 1.0]
-muted = [0.66, 0.60, 0.46, 1.0]
-accent = [0.93, 0.86, 0.58, 1.0]
-danger = [0.90, 0.62, 0.52, 1.0]
-separator = [0.42, 0.38, 0.26, 0.50]
-island_radius = 14.0
-# Vertical, horizontal padding shared by every module island
-island_padding = [4, 10]
-# Outer margin around each island (vertical, horizontal)
-island_margin = [0, 0]
-font_size = 13.0
-# UI font family (empty = system default). Examples: "Inter", "JetBrains Mono"
-font = ""
-# Font used for emoji glyphs (volume / brightness). Empty = same as font
-emoji_font = ""
-# Realtime CPU (per-core) / RAM (fill) / GPU (per-device) meters
-meter_height = 16.0
-meter_width = 3.0
-meter_gap = 2.0
-meter_bars = 8
-
-[compositor]
-# auto | niri | hyprland | none
-backend = "auto"
-
-[modules]
-# Available: workspaces, taskbar, window, clock, cpu, memory, gpu, network,
-# brightness, volume, tray, custom:<id>
-left = ["workspaces", "taskbar", "window"]
-center = ["clock"]
-right = ["cpu", "memory", "gpu", "network", "brightness", "volume", "tray"]
-# Host StatusNotifierItem tray
-tray = true
-
-[modules.clock]
-format = "%a %b %d  %I:%M %p"
-tooltip_format = "%Y-%m-%d %I:%M:%S %p"
-# on_click = "gsimplecal"
-# on_right_click = "xdg-open https://calendar.google.com"
-
-[modules.sys]
-# CPU / RAM / GPU refresh interval
-refresh_ms = 500
-
-[modules.workspaces]
-# Left-click on a workspace button still focuses it.
-# Optional commands for the workspaces strip:
-# on_click = "niri msg action focus-workspace-previous"
-# on_right_click = "niri msg action focus-workspace-next"
-
-[modules.taskbar]
-# Icon size (logical px). Chip / focus highlight grows with padding.
-width = 20.0
-# Space between the icon and the yellow focus border / chip edge
-padding = 4.0
-gap = 2.0
-max_items = 16
-
-[modules.window]
-# Truncate focused window title after this many characters
-max_chars = 42
-# on_click = "niri msg action center-window"
-# on_right_click = "niri msg action close-window"
-
-[modules.cpu]
-# label = "cpu"
-# Tokens: {label} {bar}/{meter} {percent}/{pct} — e.g. "{label} {bar} {percent}"
-# format = "{label} {bar} {percent}"
-# on_click = "ghostty -e btop"
-# on_right_click = "gnome-system-monitor"
-
-[modules.memory]
-# label = "ram"
-# format = "{label} {bar} {percent}"
-# on_click = "ghostty -e btop"
-
-[modules.gpu]
-# label = "gpu"
-# format = "{label} {bar} {percent}"
-# on_click = "ghostty -e nvtop"
-
-[modules.network]
-show_strength = true
-# Prefer Wi‑Fi SSID / ethernet connection name over wlan0/eth0
-show_name = true
-max_chars = 24
-# on_click = "nm-connection-editor"
-# on_right_click = "ghostty -e nmtui"
-
-[modules.volume]
-# Fraction of full scale per scroll notch (0.02 = 2%)
-step = 0.02
-# Soft ceiling when scrolling up
-max_percent = 150.0
-# Use headset glyph when the default sink is Bluetooth (bluez)
-detect_bluetooth = true
-# Append short device name (useful with Bluetooth)
-show_device = false
-show_percent = true
-# Left-click defaults to mute when on_click is unset
-# on_click = "pavucontrol"
-# on_right_click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
-
-[modules.brightness]
-# Percent points per scroll notch
-step = 2.0
-show_percent = true
-# on_click = "wl-gammarelay-rs"
-# on_right_click = "brightnessctl set 50%"
-
-# [[modules.custom]]
-# id = "weather"
-# command = "curl"
-# args = ["-s", "https://wttr.in/?format=1"]
-# interval_ms = 600000
-# on_click = "xdg-open https://wttr.in"
-# on_right_click = "notify-send weather refreshed"
-# json = false
-"#;
+const EXAMPLE_TOML: &str = include_str!("../../../examples/config.toml");

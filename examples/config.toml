@@ -4,46 +4,47 @@
 
 [bar]
 # Bar height in logical pixels
-height = 34
+height = 39
 # Layer margin: top, right, bottom, left
-margin = [8, 12, 0, 12]
+margin = [0, 0, 0, 0]
 # Compositor exclusive zone (0 = float over windows)
-exclusive_zone = 54
+exclusive_zone = 38
 # "top" or "bottom"
 anchor = "top"
 # Optional Wayland output name; omit / comment to use all screens
 # output = "DP-1"
 # Inner padding of the bar surface
-padding = 4
+padding = 3
 # Gap between left / center / right islands
 island_gap = 10
 # Draw separators between modules inside each island
 separators = true
 separator = "│"
-tray_menu_gap = 4
+tray_menu_gap = 0
 
 [theme]
 # Soft yellow pastel on dark — colors are RGBA floats in 0..=1
-background = [0.0, 0.0, 0.0, 0.0]
+background = [0.08, 0.07, 0.04, 0.28]
 island_background = [0.14, 0.12, 0.08, 0.94]
 text = [0.97, 0.94, 0.84, 1.0]
 muted = [0.66, 0.60, 0.46, 1.0]
 accent = [0.93, 0.86, 0.58, 1.0]
 danger = [0.90, 0.62, 0.52, 1.0]
 separator = [0.42, 0.38, 0.26, 0.50]
-island_radius = 14.0
-island_padding = [4, 10]
+island_radius = 8.0
+island_padding = [4, 8]
 island_margin = [0, 0]
-font_size = 13.0
+font_size = 14.0
 # UI font family (empty = system default). Examples: "Inter", "JetBrains Mono"
-font = ""
-# Font used for emoji glyphs (volume / brightness). Empty = same as font
-emoji_font = ""
-# Cava-style CPU/RAM/GPU meters
+font = "Georgia"
+# Font for emoji glyphs (volume / brightness). Empty = same as font
+# emoji_font = "Noto Color Emoji"
+emoji_font = "Noto Color Emoji"
+# Realtime CPU (per-core) / RAM (fill) / GPU (per-device) meters
 meter_height = 16.0
-meter_width = 3.0
-meter_gap = 2.0
-meter_bars = 8
+meter_width = 5.0
+meter_gap = 1.6
+meter_bars = 16
 
 [compositor]
 # auto | niri | hyprland | none
@@ -54,19 +55,19 @@ backend = "auto"
 # brightness, volume, tray, custom:<id>
 left = ["workspaces", "taskbar", "window"]
 center = ["clock"]
-right = ["cpu", "memory", "gpu", "network", "brightness", "volume", "tray"]
+right = ["tray", "cpu", "memory", "gpu", "network", "brightness", "volume"]
 # Host StatusNotifierItem tray
 tray = true
 
 [modules.clock]
-format = "%a %b %d  %I:%M %p"
+format = "%a %b %d ☀️ %I:%M %p"
 tooltip_format = "%Y-%m-%d %I:%M:%S %p"
 # on_click = "gsimplecal"
 # on_right_click = "xdg-open https://calendar.google.com"
 
 [modules.sys]
 # CPU / RAM / GPU refresh interval
-refresh_ms = 500
+refresh_ms = 1000
 
 [modules.workspaces]
 # Left-click on a workspace button still focuses it.
@@ -76,39 +77,39 @@ refresh_ms = 500
 
 [modules.taskbar]
 # Icon size (logical px). Chip / focus highlight grows with padding.
-width = 20.0
+width = 24.0
 # Space between the icon and the yellow focus border / chip edge
-padding = 4.0
-gap = 2.0
-max_items = 16
+padding = 2.0
+gap = 4.0
+max_items = 12
 
 [modules.window]
 # Truncate focused window title after this many characters
-max_chars = 42
+max_chars = 120
 # on_click = "niri msg action center-window"
 # on_right_click = "niri msg action close-window"
 
 [modules.cpu]
-# label = "cpu"
-# Tokens: {label} {bar}/{meter} {percent}/{pct}
-# format = "{label} {bar} {percent}"
-# on_click = "ghostty -e btop"
+label = "CPU"
+# format tokens: {label} {bar}/{meter} {percent}/{pct}
+format = "{label} {bar}"
+on_click = "alacritty -e btop"
 # on_right_click = "gnome-system-monitor"
 
 [modules.memory]
-# label = "ram"
-# format = "{label} {bar} {percent}"
+label = "RAM"
+format = "{label} {bar}"
 # on_click = "ghostty -e btop"
 
 [modules.gpu]
-# label = "gpu"
-# format = "{label} {bar} {percent}"
-# on_click = "ghostty -e nvtop"
+label = "GPU"
+format = "{label} {bar}"
+on_click = "alacritty -e amdgpu_top"
 
 [modules.network]
 show_name = true
 max_chars = 24
-show_strength = true
+show_strength = false
 # on_click = "nm-connection-editor"
 # on_right_click = "ghostty -e nmtui"
 
@@ -123,8 +124,8 @@ detect_bluetooth = true
 show_device = false
 show_percent = true
 # Left-click defaults to mute when on_click is unset
-# on_click = "pavucontrol"
-# on_right_click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+on_right_click = "pwvucontrol"
+on_click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 
 [modules.brightness]
 # Percent points per scroll notch
