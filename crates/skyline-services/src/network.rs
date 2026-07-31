@@ -1,23 +1,131 @@
-//! Network status via `ip` (interface / default route), with portable Wi‑Fi SSID
-//! lookup that does not require NetworkManager / iwctl / connman CLIs.
+//! Network status via `ip`, updated from `ip monitor` / sysfs events (no polling loop).
 
 use std::fs;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use skyline_core::{NetworkSnapshot, ServiceEvent};
+use tracing::warn;
 
 use crate::spawn_named;
 
 pub fn spawn(tx: Sender<ServiceEvent>) {
-    spawn_named("skyline-network", move || loop {
-        let snap = probe();
-        if tx.send(ServiceEvent::Network(snap)).is_err() {
-            break;
+    spawn_named("skyline-network", move || {
+        let mut last = probe();
+        if tx.send(ServiceEvent::Network(last.clone())).is_err() {
+            return;
         }
-        std::thread::sleep(Duration::from_secs(2));
+
+        if run_ip_monitor(&tx, &mut last).is_err() {
+            warn!("ip monitor unavailable; watching /sys/class/net");
+            if let Err(err) = run_sysfs_watch(&tx, &mut last) {
+                warn!("network watch failed ({err}); network module will not auto-update");
+            }
+        }
     });
+}
+
+fn publish_if_changed(
+    tx: &Sender<ServiceEvent>,
+    last: &mut NetworkSnapshot,
+) -> Result<(), ()> {
+    let snap = probe();
+    if snap != *last {
+        *last = snap.clone();
+        tx.send(ServiceEvent::Network(snap)).map_err(|_| ())?;
+    }
+    Ok(())
+}
+
+/// Stream kernel network events from `ip monitor` (iproute2).
+fn run_ip_monitor(tx: &Sender<ServiceEvent>, last: &mut NetworkSnapshot) -> Result<(), String> {
+    let mut child = Command::new("ip")
+        .args(["-o", "monitor", "link", "address", "route"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "no stdout".to_string())?;
+
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("skyline-net-ipmon".into())
+        .spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if line.is_err() {
+                    break;
+                }
+                if line_tx.send(()).is_err() {
+                    break;
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    debounce_loop(tx, last, &line_rx, Duration::from_millis(200))?;
+    let _ = child.kill();
+    Err("ip monitor ended".into())
+}
+
+fn run_sysfs_watch(tx: &Sender<ServiceEvent>, last: &mut NetworkSnapshot) -> Result<(), String> {
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if res.is_ok() {
+                let _ = notify_tx.send(());
+            }
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let net = Path::new("/sys/class/net");
+    if net.exists() {
+        watcher
+            .watch(net, RecursiveMode::Recursive)
+            .map_err(|e| e.to_string())?;
+    } else {
+        return Err("/sys/class/net missing".into());
+    }
+
+    // Keep watcher alive for the loop lifetime.
+    let _watcher = watcher;
+    debounce_loop(tx, last, &notify_rx, Duration::from_millis(250))
+}
+
+fn debounce_loop(
+    tx: &Sender<ServiceEvent>,
+    last: &mut NetworkSnapshot,
+    rx: &std::sync::mpsc::Receiver<()>,
+    debounce: Duration,
+) -> Result<(), String> {
+    let mut pending_until: Option<Instant> = None;
+    loop {
+        let timeout = pending_until
+            .map(|until| until.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_secs(3600));
+        match rx.recv_timeout(timeout) {
+            Ok(()) => {
+                pending_until = Some(Instant::now() + debounce);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if pending_until.is_some_and(|until| Instant::now() >= until) {
+                    pending_until = None;
+                    if publish_if_changed(tx, last).is_err() {
+                        return Err("ui channel closed".into());
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("event source closed".into());
+            }
+        }
+    }
 }
 
 fn probe() -> NetworkSnapshot {
@@ -76,7 +184,6 @@ fn primary_iface() -> Option<String> {
 }
 
 fn default_route_dev() -> Option<String> {
-    // `ip -j route show default`
     let output = Command::new("ip")
         .args(["-j", "route", "show", "default"])
         .output()
@@ -85,7 +192,6 @@ fn default_route_dev() -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    // Prefer lowest metric when several defaults exist.
     #[derive(serde::Deserialize)]
     struct Route {
         dev: Option<String>,
@@ -141,7 +247,6 @@ fn is_ethernet(iface: &str) -> bool {
         || iface.starts_with("eno")
 }
 
-/// SSID lookup that avoids manager CLIs (nmcli/iwctl/connmanctl).
 fn wifi_ssid(iface: &str) -> Option<String> {
     if let Some(s) = ssid_from_iw(iface) {
         return Some(s);
@@ -218,9 +323,7 @@ fn ssid_from_wpa_cli(iface: &str) -> Option<String> {
     }
 }
 
-/// Read SSID from iwd over D-Bus (no `iwctl` required).
 fn ssid_from_iwd_bus(iface: &str) -> Option<String> {
-    // Find device object whose Name == iface.
     let tree = Command::new("busctl")
         .args(["tree", "--list", "net.connman.iwd"])
         .output()
@@ -230,7 +333,6 @@ fn ssid_from_iwd_bus(iface: &str) -> Option<String> {
     }
     let paths = String::from_utf8_lossy(&tree.stdout);
     for path in paths.lines().map(str::trim).filter(|p| p.starts_with('/')) {
-        // Most tree paths are not Device objects — skip failures instead of aborting.
         let Some(name) =
             busctl_get_string("net.connman.iwd", path, "net.connman.iwd.Device", "Name")
         else {
@@ -268,7 +370,6 @@ fn busctl_get_string(dest: &str, path: &str, iface: &str, prop: &str) -> Option<
     if !output.status.success() {
         return None;
     }
-    // e.g. `s "wlan0"` or `s "My SSID"`
     let text = String::from_utf8_lossy(&output.stdout);
     parse_busctl_string(&text)
 }
@@ -281,7 +382,6 @@ fn busctl_get_object(dest: &str, path: &str, iface: &str, prop: &str) -> Option<
     if !output.status.success() {
         return None;
     }
-    // e.g. `o "/net/connman/iwd/0/4/...."`
     let text = String::from_utf8_lossy(&output.stdout);
     let text = text.trim();
     let rest = text.strip_prefix('o')?.trim();
@@ -338,13 +438,11 @@ fn signal_from_proc(iface: &str) -> Option<u8> {
         if !line.starts_with(iface) {
             continue;
         }
-        // wlan0: 0000   62.  -48.  -256 ...
         let parts: Vec<_> = line.split_whitespace().collect();
         if parts.len() < 4 {
             continue;
         }
         let level = parts[3].trim_end_matches('.').parse::<i32>().ok()?;
-        // Already a negative dBm-ish value in modern kernels.
         if level < 0 {
             return Some(dbm_to_percent(level));
         }

@@ -16,7 +16,7 @@ pub struct SysSnapshot {
     pub gpu_label: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NetworkSnapshot {
     pub connected: bool,
     /// Display label (SSID, connection name, or interface).

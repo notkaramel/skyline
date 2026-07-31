@@ -50,24 +50,40 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
 }
 
 fn run_wpctl_loop(_tx: &Sender<ServiceEvent>) {
-    let mut last = VolumeSnapshot {
-        percent: -1.0,
-        muted: false,
-        bluetooth: false,
-        device: None,
-    };
-    loop {
-        let snap = read_wpctl();
-        if (snap.percent - last.percent).abs() > 0.05
-            || snap.muted != last.muted
-            || snap.bluetooth != last.bluetooth
-            || snap.device != last.device
-        {
-            last = snap.clone();
-            publish(snap);
+    let snap = read_wpctl();
+    publish(snap);
+
+    if let Err(err) = run_pactl_subscribe() {
+        warn!("pactl subscribe unavailable ({err}); volume updates only from bar actions / Pulse");
+        loop {
+            std::thread::park();
         }
-        std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Stream PulseAudio / PipeWire events via `pactl subscribe` (no polling).
+fn run_pactl_subscribe() -> Result<(), String> {
+    let mut child = std::process::Command::new("pactl")
+        .arg("subscribe")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "no stdout".to_string())?;
+    let reader = std::io::BufReader::new(stdout);
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        let lower = line.to_lowercase();
+        // Event 'change' on sink #0 / server / sink-input …
+        if lower.contains(" on sink") || lower.contains(" on server") {
+            publish(read_wpctl());
+        }
+    }
+    let _ = child.kill();
+    Err("pactl subscribe ended".into())
 }
 
 fn read_wpctl() -> VolumeSnapshot {

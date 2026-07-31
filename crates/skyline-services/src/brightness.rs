@@ -1,10 +1,12 @@
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skyline_core::{BrightnessSnapshot, ServiceEvent};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::spawn_named;
 
@@ -34,22 +36,90 @@ fn publish(snap: BrightnessSnapshot) {
 }
 
 pub fn spawn(tx: Sender<ServiceEvent>) {
-    store_tx(tx.clone());
+    store_tx(tx);
+    let snap = read_brightness();
+    publish(snap);
+
     spawn_named("skyline-brightness", move || {
-        let mut last = BrightnessSnapshot {
-            percent: -1.0,
-            available: false,
-        };
-        loop {
-            let snap = read_brightness();
-            if (snap.percent - last.percent).abs() > 0.05 || snap.available != last.available {
-                last = snap.clone();
-                publish(snap);
+        if let Err(err) = run_sysfs_watch() {
+            warn!("brightness sysfs watch unavailable ({err}); updates only from bar actions");
+            // Stay alive so set_brightness_delta can still publish via BRIGHTNESS_TX.
+            loop {
+                std::thread::park();
             }
-            std::thread::sleep(Duration::from_millis(150));
-            let _ = &tx;
         }
     });
+}
+
+fn run_sysfs_watch() -> Result<(), String> {
+    let backlight = PathBuf::from("/sys/class/backlight");
+    if !backlight.exists() {
+        return Err("/sys/class/backlight missing".into());
+    }
+
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                if matches!(
+                    event.kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) | EventKind::Any
+                ) {
+                    let _ = notify_tx.send(());
+                }
+            }
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&backlight, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    // Also watch each device brightness node explicitly (some kernels only
+    // notify on the file, not the directory).
+    if let Ok(entries) = std::fs::read_dir(&backlight) {
+        for entry in entries.flatten() {
+            let brightness = entry.path().join("brightness");
+            if brightness.exists() {
+                let _ = watcher.watch(&brightness, RecursiveMode::NonRecursive);
+            }
+        }
+    }
+
+    let _watcher = watcher;
+    let debounce = Duration::from_millis(50);
+    let mut pending_until: Option<Instant> = None;
+    let mut last = cell()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+
+    loop {
+        let timeout = pending_until
+            .map(|until| until.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_secs(3600));
+        match notify_rx.recv_timeout(timeout) {
+            Ok(()) => {
+                pending_until = Some(Instant::now() + debounce);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if pending_until.is_some_and(|until| Instant::now() >= until) {
+                    pending_until = None;
+                    let snap = read_brightness();
+                    if (snap.percent - last.percent).abs() > 0.05 || snap.available != last.available
+                    {
+                        last = snap.clone();
+                        publish(snap);
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("watcher closed".into());
+            }
+        }
+    }
 }
 
 /// Parse `brightnessctl -c backlight -m`:
@@ -73,7 +143,6 @@ fn read_brightness() -> BrightnessSnapshot {
 fn parse_machine_readable(text: &str) -> Option<BrightnessSnapshot> {
     let line = text.lines().next()?;
     let parts: Vec<&str> = line.split(',').collect();
-    // Reject non-backlight rows if -c was ignored / listing leaked through.
     if let Some(class) = parts.get(1) {
         if !class.eq_ignore_ascii_case("backlight") {
             return None;
@@ -114,7 +183,6 @@ pub fn set_brightness_delta(delta_percent: f64) -> BrightnessSnapshot {
         return read_brightness();
     }
 
-    // Docs: `+10%` or `50%-`
     let arg = if delta_percent >= 0.0 {
         format!("+{delta_percent}%")
     } else {
