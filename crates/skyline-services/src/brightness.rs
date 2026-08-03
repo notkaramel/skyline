@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -11,13 +11,13 @@ use tracing::{debug, warn};
 use crate::spawn_named;
 
 static BRIGHTNESS: OnceLock<Mutex<BrightnessSnapshot>> = OnceLock::new();
-static BRIGHTNESS_TX: OnceLock<Mutex<Option<Sender<ServiceEvent>>>> = OnceLock::new();
+static BRIGHTNESS_TX: OnceLock<Mutex<Option<ServiceTx>>> = OnceLock::new();
 
 fn cell() -> &'static Mutex<BrightnessSnapshot> {
     BRIGHTNESS.get_or_init(|| Mutex::new(BrightnessSnapshot::default()))
 }
 
-fn store_tx(tx: Sender<ServiceEvent>) {
+fn store_tx(tx: ServiceTx) {
     let slot = BRIGHTNESS_TX.get_or_init(|| Mutex::new(None));
     if let Ok(mut g) = slot.lock() {
         *g = Some(tx);
@@ -26,6 +26,10 @@ fn store_tx(tx: Sender<ServiceEvent>) {
 
 fn publish(snap: BrightnessSnapshot) {
     if let Ok(mut g) = cell().lock() {
+        if g.visually_eq(&snap) {
+            *g = snap;
+            return;
+        }
         *g = snap.clone();
     }
     if let Some(Ok(slot)) = BRIGHTNESS_TX.get().map(|m| m.lock()) {
@@ -35,7 +39,7 @@ fn publish(snap: BrightnessSnapshot) {
     }
 }
 
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: ServiceTx) {
     store_tx(tx);
     let snap = read_brightness();
     publish(snap);

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use iced::widget::{button, container, image, mouse_area, row, space, svg, text, Column};
 use iced::widget::container::Style as ContainerStyle;
@@ -11,6 +13,11 @@ use skyline_core::{
 
 use crate::app::Message;
 use crate::style;
+
+/// Cache key → resolved icon path (including negative misses as None).
+static ICON_PATH_CACHE: Mutex<Option<HashMap<String, Option<PathBuf>>>> = Mutex::new(None);
+/// app id / title → Icon= from .desktop (including negative misses).
+static DESKTOP_ICON_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
 pub fn workspaces<'a>(
     state: &'a CompositorState,
@@ -394,12 +401,16 @@ pub fn volume<'a>(
     show_device: bool,
     clicks: &ClickActions,
 ) -> Element<'a, Message> {
-    let emoji = volume_emoji(muted, percent, bluetooth);
+    // Waybar-style Font Awesome / Nerd Font glyphs (   + ). Text uses the
+    // UI font; icons use a Nerd Font when available (same look as waybar).
+    let ui = style::ui_font(theme);
+    let icons = style::icon_font(theme);
+    let icon = volume_icon(muted, percent);
     let mut children: Vec<Element<'a, Message>> = vec![
         container(
-            text(emoji)
+            text(icon)
                 .size(theme.font_size)
-                .font(style::emoji_font(theme))
+                .font(icons)
                 .color(style::rgba(theme.text))
                 .line_height(iced::widget::text::LineHeight::Relative(1.0)),
         )
@@ -414,7 +425,7 @@ pub fn volume<'a>(
                 text("mute")
                     .size(theme.font_size)
                     .color(style::rgba(theme.text))
-                    .font(iced::Font::MONOSPACE)
+                    .font(ui)
                     .line_height(iced::widget::text::LineHeight::Relative(1.0)),
             )
             .width(Length::Fixed(width))
@@ -431,13 +442,27 @@ pub fn volume<'a>(
             style::rgba(theme.text),
         ));
     }
+    if bluetooth {
+        children.push(
+            container(
+                text("")
+                    .size(theme.font_size)
+                    .font(icons)
+                    .color(style::rgba(theme.text))
+                    .line_height(iced::widget::text::LineHeight::Relative(1.0)),
+            )
+            .height(Length::Fill)
+            .align_y(iced::Alignment::Center)
+            .into(),
+        );
+    }
     if show_device {
         if let Some(dev) = device.filter(|d| !d.is_empty()) {
             children.push(
                 container(
                     text(dev.to_string())
                         .size(theme.font_size)
-                        .font(style::ui_font(theme))
+                        .font(ui)
                         .color(style::rgba(theme.muted))
                         .line_height(iced::widget::text::LineHeight::Relative(1.0)),
                 )
@@ -525,19 +550,15 @@ pub fn brightness<'a>(
         .into()
 }
 
-fn volume_emoji(muted: bool, percent: f64, bluetooth: bool) -> &'static str {
+/// Waybar-compatible volume glyphs (Font Awesome / Nerd Font private-use).
+/// Levels match waybar `format-icons.default`:  / , muted .
+fn volume_icon(muted: bool, percent: f64) -> &'static str {
     if muted || percent < 0.5 {
-        return "🔇";
-    }
-    if bluetooth {
-        return "🎧";
-    }
-    if percent < 34.0 {
-        "🔈"
-    } else if percent < 67.0 {
-        "🔉"
+        "" // nf-fa-volume_off
+    } else if percent < 50.0 {
+        "" // nf-fa-volume_down
     } else {
-        "🔊"
+        "" // nf-fa-volume_up
     }
 }
 
@@ -677,6 +698,24 @@ fn resolve_icon_path(name: &str, theme_path: Option<&str>) -> Option<PathBuf> {
         return None;
     }
 
+    let cache_key = format!("{}\0{}", theme_path.unwrap_or(""), name);
+    if let Ok(mut guard) = ICON_PATH_CACHE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        if let Some(cached) = map.get(&cache_key) {
+            return cached.clone();
+        }
+    }
+
+    let resolved = resolve_icon_path_uncached(name, theme_path);
+
+    if let Ok(mut guard) = ICON_PATH_CACHE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.insert(cache_key, resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_icon_path_uncached(name: &str, theme_path: Option<&str>) -> Option<PathBuf> {
     // Absolute / relative file path.
     if name.contains('/') {
         let p = PathBuf::from(name);
@@ -821,6 +860,27 @@ fn find_in_theme_root(theme_root: &Path, name: &str) -> Option<PathBuf> {
 
 fn desktop_icon_name(key: &str) -> Option<String> {
     let key_l = key.to_lowercase();
+    if key_l.is_empty() {
+        return None;
+    }
+
+    if let Ok(mut guard) = DESKTOP_ICON_CACHE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        if let Some(cached) = map.get(&key_l) {
+            return cached.clone();
+        }
+    }
+
+    let resolved = desktop_icon_name_uncached(key);
+    if let Ok(mut guard) = DESKTOP_ICON_CACHE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.insert(key_l, resolved.clone());
+    }
+    resolved
+}
+
+fn desktop_icon_name_uncached(key: &str) -> Option<String> {
+    let key_l = key.to_lowercase();
     let key_short = key_l.rsplit('.').next().unwrap_or(&key_l).to_string();
     let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let dirs = [
@@ -881,6 +941,9 @@ fn desktop_icon_name(key: &str) -> Option<String> {
 pub fn clock_tooltip<'a>(tip: String, theme: &'a ThemeConfig) -> Element<'a, Message> {
     let bg = style::rgba(theme.island_background);
     let radius = theme.island_radius;
+    let border_w = theme.island_border_width.max(0.0);
+    let border_c = style::rgba(theme.island_border);
+    let shadow = style::island_shadow(theme);
     container(
         text(tip)
             .size(theme.font_size)
@@ -893,9 +956,10 @@ pub fn clock_tooltip<'a>(tip: String, theme: &'a ThemeConfig) -> Element<'a, Mes
         background: Some(Background::Color(bg)),
         border: Border {
             radius: radius.into(),
-            width: 1.0,
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+            width: border_w,
+            color: border_c,
         },
+        shadow,
         ..Default::default()
     })
     .into()

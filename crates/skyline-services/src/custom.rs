@@ -1,6 +1,6 @@
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::time::Duration;
 
 use skyline_core::{CustomModuleConfig, CustomSnapshot, ServiceEvent};
@@ -9,14 +9,14 @@ use tracing::warn;
 use crate::live;
 use crate::spawn_named;
 
-pub fn spawn(modules: Vec<CustomModuleConfig>, tx: Sender<ServiceEvent>) {
+pub fn spawn(modules: Vec<CustomModuleConfig>, tx: ServiceTx) {
     let gen = live::get().custom_generation.load(Ordering::SeqCst);
     spawn_generation(gen, modules, tx);
 }
 
 /// Bump generation (stopping previous custom loops) and start modules from the
 /// reloaded config.
-pub fn reload(modules: Vec<CustomModuleConfig>, tx: Sender<ServiceEvent>) {
+pub fn reload(modules: Vec<CustomModuleConfig>, tx: ServiceTx) {
     let gen = live::get()
         .custom_generation
         .fetch_add(1, Ordering::SeqCst)
@@ -24,7 +24,7 @@ pub fn reload(modules: Vec<CustomModuleConfig>, tx: Sender<ServiceEvent>) {
     spawn_generation(gen, modules, tx);
 }
 
-fn spawn_generation(gen: u64, modules: Vec<CustomModuleConfig>, tx: Sender<ServiceEvent>) {
+fn spawn_generation(gen: u64, modules: Vec<CustomModuleConfig>, tx: ServiceTx) {
     for module in modules {
         let tx = tx.clone();
         spawn_named("skyline-custom", move || {

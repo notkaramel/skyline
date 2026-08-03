@@ -15,10 +15,10 @@ Native Wayland status bar with modular islands. Built in Rust with `iced` + `ice
 ## Build
 
 ```bash
-make            # release build
-make run        # build and run
-sudo make install   # install to /usr/local/bin
-sudo make uninstall
+make            # release build → target/release/skyline
+make run        # run from target/ (no build)
+make install    # same as build — keeps the binary in target/
+make install-user   # optional: copy to ~/.local/bin (no sudo)
 make help
 ```
 
@@ -40,17 +40,23 @@ Add to your niri config:
 spawn-at-startup "skyline"
 ```
 
-Or with a full path:
+Or with a full path to the local build:
 
 ```kdl
-spawn-at-startup "/usr/local/bin/skyline"
+spawn-at-startup "/absolute/path/to/skyline/target/release/skyline"
+```
+
+Or after `make install-user` (binary in `~/.local/bin`):
+
+```kdl
+spawn-at-startup "skyline"
 ```
 
 ## Config
 
 Default path: `~/.config/skyline/config.toml`
 
-See [examples/config.toml](examples/config.toml). After `sudo make install`, read the man page with `man skyline`.
+See [examples/config.toml](examples/config.toml). After `make install-user`, the man page is available via `man skyline` if `~/.local/share/man` is on your manpath.
 
 Edits to the config file are **hot-reloaded** on save (theme, modules, separators, steps, bar size/margins, clock format, sys refresh, custom modules). Switching the compositor backend still needs a restart.
 

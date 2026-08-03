@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::time::{Duration, Instant};
 
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -10,7 +10,7 @@ use crate::spawn_named;
 
 /// Watch `path` (and its parent directory) and emit [`ServiceEvent::ConfigReloaded`]
 /// after successful saves. Debounces bursty editor write/rename sequences.
-pub fn spawn(path: PathBuf, tx: Sender<ServiceEvent>) {
+pub fn spawn(path: PathBuf, tx: ServiceTx) {
     spawn_named("skyline-config", move || {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);

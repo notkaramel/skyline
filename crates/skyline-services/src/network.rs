@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::time::{Duration, Instant};
 
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
@@ -13,7 +13,7 @@ use tracing::warn;
 
 use crate::spawn_named;
 
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: ServiceTx) {
     spawn_named("skyline-network", move || {
         let mut last = probe();
         if tx.send(ServiceEvent::Network(last.clone())).is_err() {
@@ -30,7 +30,7 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
 }
 
 fn publish_if_changed(
-    tx: &Sender<ServiceEvent>,
+    tx: &ServiceTx,
     last: &mut NetworkSnapshot,
 ) -> Result<(), ()> {
     let snap = probe();
@@ -42,7 +42,7 @@ fn publish_if_changed(
 }
 
 /// Stream kernel network events from `ip monitor` (iproute2).
-fn run_ip_monitor(tx: &Sender<ServiceEvent>, last: &mut NetworkSnapshot) -> Result<(), String> {
+fn run_ip_monitor(tx: &ServiceTx, last: &mut NetworkSnapshot) -> Result<(), String> {
     let mut child = Command::new("ip")
         .args(["-o", "monitor", "link", "address", "route"])
         .stdout(Stdio::piped())
@@ -72,7 +72,7 @@ fn run_ip_monitor(tx: &Sender<ServiceEvent>, last: &mut NetworkSnapshot) -> Resu
     Err("ip monitor ended".into())
 }
 
-fn run_sysfs_watch(tx: &Sender<ServiceEvent>, last: &mut NetworkSnapshot) -> Result<(), String> {
+fn run_sysfs_watch(tx: &ServiceTx, last: &mut NetworkSnapshot) -> Result<(), String> {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel();
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
@@ -99,7 +99,7 @@ fn run_sysfs_watch(tx: &Sender<ServiceEvent>, last: &mut NetworkSnapshot) -> Res
 }
 
 fn debounce_loop(
-    tx: &Sender<ServiceEvent>,
+    tx: &ServiceTx,
     last: &mut NetworkSnapshot,
     rx: &std::sync::mpsc::Receiver<()>,
     debounce: Duration,

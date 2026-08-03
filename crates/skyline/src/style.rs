@@ -6,7 +6,7 @@ use iced::widget::container;
 use iced::widget::container::Style as ContainerStyle;
 use iced::widget::row;
 use iced::widget::text;
-use iced::{Background, Border, Color, Element, Font, Theme};
+use iced::{Background, Border, Color, Element, Font, Padding, Shadow, Theme, Vector};
 use skyline_core::ThemeConfig;
 
 use crate::app::Message;
@@ -53,6 +53,50 @@ pub fn emoji_font(theme: &ThemeConfig) -> Font {
     }
 }
 
+/// Font for Waybar-style status icons (Font Awesome / Nerd Font private-use glyphs).
+/// Prefers a Nerd Font when available so  render; falls back to the UI font.
+pub fn icon_font(theme: &ThemeConfig) -> Font {
+    static CACHED: Mutex<Option<Option<&'static str>>> = Mutex::new(None);
+    let mut guard = CACHED.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() {
+        *guard = Some(detect_nerd_font());
+    }
+    match guard.as_ref().and_then(|o| o.as_deref()) {
+        Some(name) => named_font(name),
+        None => ui_font(theme),
+    }
+}
+
+fn detect_nerd_font() -> Option<&'static str> {
+    const CANDIDATES: &[&str] = &[
+        "DejaVuSansM Nerd Font Propo",
+        "DejaVuSansM Nerd Font Mono",
+        "DejaVuSansM Nerd Font",
+        "Symbols Nerd Font Mono",
+        "Symbols Nerd Font",
+        "FiraCode Nerd Font Mono",
+        "FiraCode Nerd Font",
+        "JetBrainsMono Nerd Font Mono",
+        "JetBrainsMono Nerd Font",
+        "MesloLGS NF",
+        "Hack Nerd Font Mono",
+        "Hack Nerd Font",
+    ];
+    for name in CANDIDATES {
+        let Ok(out) = std::process::Command::new("fc-list")
+            .args([*name, "family"])
+            .output()
+        else {
+            continue;
+        };
+        if out.status.success() && !out.stdout.is_empty() {
+            let leaked: &'static str = Box::leak((*name).to_string().into_boxed_str());
+            return Some(leaked);
+        }
+    }
+    None
+}
+
 pub fn app_style(_app: &crate::app::App, theme: &Theme) -> iced::theme::Style {
     iced::theme::Style {
         background_color: Color::TRANSPARENT,
@@ -81,10 +125,16 @@ pub fn island<'a>(
 ) -> Element<'a, Message> {
     let bg = rgba(theme.island_background);
     let radius = theme.island_radius;
+    let border_w = theme.island_border_width.max(0.0);
+    let border_c = rgba(theme.island_border);
+    let shadow = island_shadow(theme);
     let pad_v = theme.island_padding[0];
     let pad_h = theme.island_padding[1];
-    let margin_v = theme.island_margin[0];
-    let margin_h = theme.island_margin[1];
+    let margin_v = f32::from(theme.island_margin[0]);
+    let margin_h = f32::from(theme.island_margin[1]);
+    // Reserve room so a hard cast shadow is not clipped by neighbors / bar edge.
+    let shadow_right = theme.island_shadow_offset[0].max(0.0) + theme.island_shadow_blur.max(0.0);
+    let shadow_bottom = theme.island_shadow_offset[1].max(0.0) + theme.island_shadow_blur.max(0.0);
     let island = container(content)
         .padding([pad_v, pad_h])
         .height(iced::Length::Fill)
@@ -93,16 +143,37 @@ pub fn island<'a>(
             background: Some(Background::Color(bg)),
             border: Border {
                 radius: radius.into(),
-                width: 1.0,
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.06),
+                width: border_w,
+                color: border_c,
             },
+            shadow,
             ..Default::default()
         });
-    // Outer margin keeps islands from shifting neighbors when content width changes.
     container(island)
-        .padding([margin_v, margin_h])
+        .padding(Padding {
+            top: margin_v,
+            right: margin_h + shadow_right,
+            bottom: margin_v + shadow_bottom,
+            left: margin_h,
+        })
         .height(iced::Length::Fill)
         .into()
+}
+
+/// Build the configured island drop shadow (hard offset when blur is 0).
+pub fn island_shadow(theme: &ThemeConfig) -> Shadow {
+    let color = rgba(theme.island_shadow);
+    if color.a <= f32::EPSILON
+        && theme.island_shadow_offset[0].abs() <= f32::EPSILON
+        && theme.island_shadow_offset[1].abs() <= f32::EPSILON
+    {
+        return Shadow::default();
+    }
+    Shadow {
+        color,
+        offset: Vector::new(theme.island_shadow_offset[0], theme.island_shadow_offset[1]),
+        blur_radius: theme.island_shadow_blur.max(0.0),
+    }
 }
 
 /// Fixed-width percent label so 5% → 50% does not resize the island.
@@ -118,7 +189,7 @@ pub fn percent_slot<'a>(
         text(label)
             .size(size)
             .color(color)
-            .font(Font::MONOSPACE)
+            .font(ui_font(theme))
             .line_height(iced::widget::text::LineHeight::Relative(1.0)),
     )
     .width(iced::Length::Fixed(width))
@@ -156,14 +227,26 @@ pub fn workspace_button(
     urgent: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + '_ {
     move |_t, status| {
+        let radius = theme.island_radius;
         let mut style = button::Style::default();
         style.border = Border {
-            radius: 9.0.into(),
-            width: 0.0,
-            color: Color::TRANSPARENT,
+            radius: radius.into(),
+            width: if active || urgent {
+                theme.island_border_width.max(2.0).min(4.0)
+            } else {
+                0.0
+            },
+            color: if urgent {
+                rgba(theme.danger)
+            } else if active {
+                rgba(theme.accent)
+            } else {
+                Color::TRANSPARENT
+            },
         };
         style.text_color = if active {
-            Color::from_rgb(0.14, 0.12, 0.16)
+            // Dark ink on accent fill — hard contrast like wofi selected text
+            Color::from_rgb(0.04, 0.03, 0.08)
         } else if urgent {
             rgba(theme.danger)
         } else {
@@ -173,7 +256,12 @@ pub fn workspace_button(
             rgba(theme.accent)
         } else {
             match status {
-                button::Status::Hovered => Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                button::Status::Hovered => Color::from_rgba(
+                    theme.accent[0],
+                    theme.accent[1],
+                    theme.accent[2],
+                    0.18,
+                ),
                 _ => Color::TRANSPARENT,
             }
         }));
@@ -182,7 +270,12 @@ pub fn workspace_button(
 }
 
 pub fn taskbar_chip_style(theme: &ThemeConfig, focused: bool) -> ContainerStyle {
-    let radius = (theme.island_radius * 0.45).clamp(4.0, 8.0);
+    let radius = theme.island_radius;
+    let border_w = if focused {
+        theme.island_border_width.max(2.0).min(4.0)
+    } else {
+        0.0
+    };
     ContainerStyle {
         background: Some(Background::Color(if focused {
             Color::from_rgba(
@@ -196,7 +289,7 @@ pub fn taskbar_chip_style(theme: &ThemeConfig, focused: bool) -> ContainerStyle 
         })),
         border: Border {
             radius: radius.into(),
-            width: if focused { 1.0 } else { 0.0 },
+            width: border_w,
             color: if focused {
                 rgba(theme.accent)
             } else {

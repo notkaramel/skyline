@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::time::Duration;
 
 use skyline_core::{ServiceEvent, SysSnapshot};
@@ -10,9 +10,10 @@ use sysinfo::System;
 use crate::live;
 use crate::spawn_named;
 
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: ServiceTx) {
     spawn_named("skyline-sys", move || {
         let mut sys = System::new();
+        let mut last: Option<SysSnapshot> = None;
         loop {
             sys.refresh_cpu_usage();
             sys.refresh_memory();
@@ -36,8 +37,12 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
                 gpu_per_device,
                 gpu_label,
             };
-            if tx.send(ServiceEvent::Sys(snap)).is_err() {
-                break;
+            let changed = last.as_ref().is_none_or(|prev| !prev.visually_eq(&snap));
+            if changed {
+                last = Some(snap.clone());
+                if tx.send(ServiceEvent::Sys(snap)).is_err() {
+                    break;
+                }
             }
             let refresh_ms = live::get().sys_refresh_ms.load(Ordering::Relaxed).max(50);
             std::thread::sleep(Duration::from_millis(refresh_ms));

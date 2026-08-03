@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::time::Duration;
 
 use chrono::{Local, Timelike};
@@ -7,7 +7,7 @@ use skyline_core::ServiceEvent;
 use crate::live;
 use crate::spawn_named;
 
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: ServiceTx) {
     spawn_named("skyline-clock", move || {
         let mut last = String::new();
         loop {

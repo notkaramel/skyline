@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Snapshot of compositor-facing state consumed by the UI.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CompositorState {
     pub focused_output: Option<String>,
     pub outputs: Vec<OutputInfo>,

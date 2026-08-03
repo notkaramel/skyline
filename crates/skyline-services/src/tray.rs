@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use skyline_core::{
@@ -17,7 +17,7 @@ fn client_slot() -> &'static Mutex<Option<Arc<Client>>> {
     CLIENT.get_or_init(|| Mutex::new(None))
 }
 
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: ServiceTx) {
     spawn_tokio("skyline-tray", async move {
         match Client::new().await {
             Ok(client) => {
@@ -47,7 +47,7 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
     });
 }
 
-fn publish_items(client: &Client, tx: &Sender<ServiceEvent>) {
+fn publish_items(client: &Client, tx: &ServiceTx) {
     let items = client.items();
     let Ok(guard) = items.lock() else {
         return;
@@ -57,6 +57,15 @@ fn publish_items(client: &Client, tx: &Sender<ServiceEvent>) {
         out.push(item_to_snapshot(id, item));
     }
     out.sort_by(|a, b| a.title.cmp(&b.title));
+    // Avoid redraw storms when SNI clients re-emit identical icon state.
+    static LAST: std::sync::Mutex<Vec<skyline_core::TrayItemSnapshot>> =
+        std::sync::Mutex::new(Vec::new());
+    if let Ok(mut last) = LAST.lock() {
+        if *last == out {
+            return;
+        }
+        *last = out.clone();
+    }
     let _ = tx.send(ServiceEvent::TrayItems(out));
 }
 
@@ -130,7 +139,7 @@ pub fn activate_item(id: &str) {
     });
 }
 
-pub fn request_menu(id: &str, tx: Sender<ServiceEvent>) {
+pub fn request_menu(id: &str, tx: ServiceTx) {
     let client = {
         let slot = client_slot().lock().ok();
         slot.and_then(|g| g.clone())

@@ -19,5 +19,6 @@ anyhow.workspace = true
 chrono.workspace = true
 iced.workspace = true
 iced_layershell.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

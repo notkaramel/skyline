@@ -6,17 +6,17 @@ mod widgets;
 
 use std::env;
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 use anyhow::Result;
 use iced_layershell::reexport::Anchor;
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::build_pattern::daemon;
-use skyline_core::{CompositorBackendKind, Config};
+use skyline_core::{CompositorBackendKind, Config, ServiceEvent};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::app::App;
+use crate::app::{App, ServiceRxSlot};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -36,10 +36,10 @@ fn main() -> Result<()> {
         config.bar.height
     );
 
-    let (service_tx, service_rx) = mpsc::channel();
+    let (service_tx, service_rx) = unbounded_channel();
     skyline_services::spawn_all(&config, config_path, service_tx.clone());
     spawn_compositor(&config, service_tx.clone());
-    let service_rx = std::sync::Arc::new(std::sync::Mutex::new(service_rx));
+    let service_rx = ServiceRxSlot::new(service_rx);
 
     let start_mode = match config.bar.output.clone().or_else(|| env::var("SKYLINE_OUTPUT").ok()) {
         Some(output) => StartMode::TargetScreen(output),
@@ -130,7 +130,7 @@ fn load_config() -> Result<(Config, PathBuf)> {
     Ok((config, path))
 }
 
-fn spawn_compositor(config: &Config, tx: std::sync::mpsc::Sender<skyline_core::ServiceEvent>) {
+fn spawn_compositor(config: &Config, tx: UnboundedSender<ServiceEvent>) {
     let kind = match config.compositor.backend {
         CompositorBackendKind::Auto => {
             if skyline_niri::is_available() {

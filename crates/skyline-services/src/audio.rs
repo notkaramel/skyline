@@ -1,5 +1,5 @@
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
+use crate::ServiceTx;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -15,13 +15,13 @@ use crate::live;
 use crate::spawn_named;
 
 static VOLUME: OnceLock<Mutex<VolumeSnapshot>> = OnceLock::new();
-static VOLUME_TX: OnceLock<Mutex<Option<Sender<ServiceEvent>>>> = OnceLock::new();
+static VOLUME_TX: OnceLock<Mutex<Option<ServiceTx>>> = OnceLock::new();
 
 fn volume_cell() -> &'static Mutex<VolumeSnapshot> {
     VOLUME.get_or_init(|| Mutex::new(VolumeSnapshot::default()))
 }
 
-fn store_tx(tx: Sender<ServiceEvent>) {
+fn store_tx(tx: ServiceTx) {
     let slot = VOLUME_TX.get_or_init(|| Mutex::new(None));
     if let Ok(mut g) = slot.lock() {
         *g = Some(tx);
@@ -29,6 +29,18 @@ fn store_tx(tx: Sender<ServiceEvent>) {
 }
 
 fn publish(snap: VolumeSnapshot) {
+    static LAST: OnceLock<Mutex<VolumeSnapshot>> = OnceLock::new();
+    let last = LAST.get_or_init(|| Mutex::new(VolumeSnapshot::default()));
+    if let Ok(mut g) = last.lock() {
+        if g.visually_eq(&snap) {
+            // Still keep VOLUME cell in sync for scroll math, but skip UI event.
+            if let Ok(mut cell) = volume_cell().lock() {
+                *cell = snap;
+            }
+            return;
+        }
+        *g = snap.clone();
+    }
     if let Ok(mut g) = volume_cell().lock() {
         *g = snap.clone();
     }
@@ -39,7 +51,7 @@ fn publish(snap: VolumeSnapshot) {
     }
 }
 
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: ServiceTx) {
     store_tx(tx.clone());
     spawn_named("skyline-audio", move || {
         if let Err(err) = run_pulse(tx.clone()) {
@@ -49,7 +61,7 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
     });
 }
 
-fn run_wpctl_loop(_tx: &Sender<ServiceEvent>) {
+fn run_wpctl_loop(_tx: &ServiceTx) {
     let snap = read_wpctl();
     publish(snap);
 
@@ -179,7 +191,7 @@ fn short_device_label(raw: &str) -> Option<String> {
     Some(s)
 }
 
-fn run_pulse(tx: Sender<ServiceEvent>) -> Result<(), String> {
+fn run_pulse(tx: ServiceTx) -> Result<(), String> {
     let mut mainloop = Mainloop::new().ok_or("pulse mainloop")?;
     let mut context = Context::new(&mainloop, "skyline").ok_or("pulse context")?;
     context

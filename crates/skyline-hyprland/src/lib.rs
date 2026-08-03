@@ -1,6 +1,5 @@
 //! Hyprland compositor backend.
 
-use std::sync::mpsc::Sender;
 use std::thread;
 
 use hyprland::data::{Client, Clients, Monitor, Monitors, Workspace, Workspaces};
@@ -9,10 +8,11 @@ use hyprland::event_listener::EventListener;
 use hyprland::prelude::*;
 use hyprland::shared::{Address, HyprData, HyprDataActive, HyprDataActiveOptional};
 use skyline_core::{CompositorState, OutputInfo, ServiceEvent, WindowInfo, WorkspaceInfo};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
 /// Spawn a thread that listens for Hyprland events and pushes snapshots.
-pub fn spawn(tx: Sender<ServiceEvent>) {
+pub fn spawn(tx: UnboundedSender<ServiceEvent>) {
     thread::Builder::new()
         .name("skyline-hyprland".into())
         .spawn(move || {
@@ -26,42 +26,76 @@ pub fn spawn(tx: Sender<ServiceEvent>) {
         .expect("spawn hyprland backend thread");
 }
 
-fn run(tx: Sender<ServiceEvent>) -> hyprland::Result<()> {
+fn run(tx: UnboundedSender<ServiceEvent>) -> hyprland::Result<()> {
     let mut listener = EventListener::new();
-    let tx_ws = tx.clone();
-    listener.add_workspace_changed_handler(move |_| {
-        let _ = push_snapshot(&tx_ws);
-    });
-    let tx_add = tx.clone();
-    listener.add_workspace_added_handler(move |_| {
-        let _ = push_snapshot(&tx_add);
-    });
-    let tx_del = tx.clone();
-    listener.add_workspace_deleted_handler(move |_| {
-        let _ = push_snapshot(&tx_del);
-    });
-    let tx_win = tx.clone();
-    listener.add_active_window_changed_handler(move |_| {
-        let _ = push_snapshot(&tx_win);
-    });
-    let tx_mon = tx.clone();
-    listener.add_active_monitor_changed_handler(move |_| {
-        let _ = push_snapshot(&tx_mon);
-    });
-    let tx_open = tx.clone();
-    listener.add_window_opened_handler(move |_| {
-        let _ = push_snapshot(&tx_open);
-    });
-    let tx_close = tx;
-    listener.add_window_closed_handler(move |_| {
-        let _ = push_snapshot(&tx_close);
-    });
+    // Fresh closures per handler so each gets the right event-data type.
+    {
+        let tx = tx.clone();
+        listener.add_workspace_changed_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_workspace_added_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_workspace_deleted_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_active_window_changed_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_active_monitor_changed_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_window_opened_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_window_closed_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_window_moved_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_window_title_changed_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
 
     listener.start_listener()
 }
 
-fn push_snapshot(tx: &Sender<ServiceEvent>) -> hyprland::Result<()> {
+fn push_snapshot(tx: &UnboundedSender<ServiceEvent>) -> hyprland::Result<()> {
     let snapshot = collect_state()?;
+    static LAST: std::sync::Mutex<Option<CompositorState>> = std::sync::Mutex::new(None);
+    if let Ok(mut last) = LAST.lock() {
+        if last.as_ref() == Some(&snapshot) {
+            return Ok(());
+        }
+        *last = Some(snapshot.clone());
+    }
     if tx.send(ServiceEvent::Compositor(snapshot)).is_err() {
         warn!("hyprland: UI channel closed");
     }

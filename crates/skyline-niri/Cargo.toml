@@ -8,4 +8,5 @@ description = "Niri EventStream compositor backend for Skyline"
 [dependencies]
 skyline-core.workspace = true
 niri-ipc.workspace = true
+tokio.workspace = true
 tracing.workspace = true

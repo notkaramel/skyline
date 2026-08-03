@@ -7,10 +7,11 @@ use niri_ipc::socket::Socket;
 use niri_ipc::state::{EventStreamState, EventStreamStatePart};
 use niri_ipc::{Request, Response};
 use skyline_core::{CompositorState, OutputInfo, ServiceEvent, WindowInfo, WorkspaceInfo};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
 
 /// Spawn a blocking thread that streams niri events into `tx`.
-pub fn spawn(tx: std::sync::mpsc::Sender<ServiceEvent>) {
+pub fn spawn(tx: UnboundedSender<ServiceEvent>) {
     thread::Builder::new()
         .name("skyline-niri".into())
         .spawn(move || {
@@ -21,7 +22,7 @@ pub fn spawn(tx: std::sync::mpsc::Sender<ServiceEvent>) {
         .expect("spawn niri backend thread");
 }
 
-fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
+fn run(tx: UnboundedSender<ServiceEvent>) -> std::io::Result<()> {
     let mut outputs = fetch_outputs();
     let mut socket = Socket::connect()?;
     let reply = socket.send(Request::EventStream)?;
@@ -39,6 +40,7 @@ fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
     let mut state = EventStreamState::default();
     let mut read_event = socket.read_events();
     let mut events_since_output_refresh = 0u32;
+    let mut last_snapshot: Option<CompositorState> = None;
 
     loop {
         let event = match read_event() {
@@ -57,6 +59,12 @@ fn run(tx: std::sync::mpsc::Sender<ServiceEvent>) -> std::io::Result<()> {
             events_since_output_refresh = 0;
         }
         let snapshot = snapshot_from_state(&state, &outputs);
+        // Layout-only niri events often leave our bar snapshot unchanged; skip
+        // those so iced does not redraw at compositor frame rate.
+        if last_snapshot.as_ref() == Some(&snapshot) {
+            continue;
+        }
+        last_snapshot = Some(snapshot.clone());
         if tx.send(ServiceEvent::Compositor(snapshot)).is_err() {
             break;
         }

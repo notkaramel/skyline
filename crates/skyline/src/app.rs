@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::Mutex;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
+use iced::futures::SinkExt;
+use iced::stream;
 use iced::widget::{container, mouse_area, row, space, text};
 use iced::window::Id;
 use iced::{Element, Event, Length, Subscription, Task};
@@ -17,6 +19,8 @@ use skyline_core::{
     BrightnessSnapshot, CompositorState, Config, CustomSnapshot, ModuleKind, NetworkSnapshot,
     OutputInfo, ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuSnapshot, VolumeSnapshot,
 };
+use skyline_services::ServiceTx;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{info, warn};
 
 use crate::style;
@@ -28,10 +32,38 @@ const SCROLL_DEBOUNCE: Duration = Duration::from_millis(70);
 const VOLUME_SCROLL_BURST: f64 = 0.10; // 10% of full scale
 const BRIGHTNESS_SCROLL_BURST: f64 = 10.0; // percent points
 
+/// Service bus receiver, shared with the iced subscription (hashed by Arc address).
+#[derive(Clone)]
+pub struct ServiceRxSlot(Arc<Mutex<Option<UnboundedReceiver<ServiceEvent>>>>);
+
+impl ServiceRxSlot {
+    pub fn new(rx: UnboundedReceiver<ServiceEvent>) -> Self {
+        Self(Arc::new(Mutex::new(Some(rx))))
+    }
+
+    fn take_rx(&self) -> Option<UnboundedReceiver<ServiceEvent>> {
+        self.0.lock().ok().and_then(|mut g| g.take())
+    }
+}
+
+impl PartialEq for ServiceRxSlot {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ServiceRxSlot {}
+
+impl Hash for ServiceRxSlot {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
 pub struct App {
     pub config: Config,
-    service_rx: std::sync::Arc<std::sync::Mutex<Receiver<ServiceEvent>>>,
-    service_tx: Sender<ServiceEvent>,
+    service_rx: ServiceRxSlot,
+    service_tx: ServiceTx,
     clock: String,
     compositor: CompositorState,
     sys: SysSnapshot,
@@ -64,7 +96,8 @@ pub enum PopupKind {
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 pub enum Message {
-    ServicePoll,
+    /// One or more service events (pushed instantly; no timer poll).
+    Services(Vec<ServiceEvent>),
     ScrollDebounce,
     FocusWorkspace(u64),
     FocusWindow(u64),
@@ -87,8 +120,8 @@ pub enum Message {
 impl App {
     pub fn new(
         config: Config,
-        service_rx: std::sync::Arc<std::sync::Mutex<Receiver<ServiceEvent>>>,
-        service_tx: Sender<ServiceEvent>,
+        service_rx: ServiceRxSlot,
+        service_tx: ServiceTx,
     ) -> (Self, Task<Message>) {
         let bound_output = config.bar.output.clone();
         (
@@ -124,7 +157,7 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
-            iced::time::every(Duration::from_millis(100)).map(|_| Message::ServicePoll),
+            service_subscription(self.service_rx.clone()),
             iced::event::listen_with(|event, _status, id| match &event {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
                     if matches!(key, keyboard::Key::Named(Named::Escape)) =>
@@ -156,7 +189,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ServicePoll => self.drain_services(),
+            Message::Services(events) => self.apply_services(events),
             Message::ScrollDebounce => {
                 self.flush_volume_scroll(false);
                 self.flush_brightness_scroll(false);
@@ -588,22 +621,21 @@ impl App {
         }
     }
 
-    fn drain_services(&mut self) -> Task<Message> {
-        let events: Vec<ServiceEvent> = {
-            let Ok(rx) = self.service_rx.lock() else {
-                return Task::none();
-            };
-            let mut events = Vec::new();
-            loop {
-                match rx.try_recv() {
-                    Ok(ev) => events.push(ev),
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+    fn apply_services(&mut self, events: Vec<ServiceEvent>) -> Task<Message> {
+        let mut tasks = Vec::new();
+        // Coalesce compositor floods: keep only the latest snapshot in a burst.
+        let mut last_compositor: Option<ServiceEvent> = None;
+        for ev in events {
+            match ev {
+                ServiceEvent::Compositor(_) => last_compositor = Some(ev),
+                other => {
+                    if let Some(task) = self.apply_service(other) {
+                        tasks.push(task);
+                    }
                 }
             }
-            events
-        };
-        let mut tasks = Vec::new();
-        for ev in events {
+        }
+        if let Some(ev) = last_compositor {
             if let Some(task) = self.apply_service(ev) {
                 tasks.push(task);
             }
@@ -615,40 +647,64 @@ impl App {
         match ev {
             ServiceEvent::Tick => None,
             ServiceEvent::Clock(s) => {
+                if self.clock == s {
+                    return None;
+                }
                 self.clock = s;
                 None
             }
             ServiceEvent::Compositor(state) => {
+                if self.compositor == state {
+                    return None;
+                }
                 self.compositor = state;
                 self.refresh_bar_output_pins();
                 None
             }
             ServiceEvent::Sys(s) => {
+                if self.sys.visually_eq(&s) {
+                    return None;
+                }
                 self.sys = s;
                 None
             }
             ServiceEvent::Network(n) => {
+                if self.network == n {
+                    return None;
+                }
                 self.network = n;
                 None
             }
             ServiceEvent::Volume(v) => {
                 // Don't clobber an in-flight scroll preview.
                 if self.volume_pending.abs() <= f64::EPSILON {
+                    if self.volume.visually_eq(&v) {
+                        return None;
+                    }
                     self.volume = v;
                 }
                 None
             }
             ServiceEvent::Brightness(b) => {
                 if self.brightness_pending.abs() <= f64::EPSILON {
+                    if self.brightness.visually_eq(&b) {
+                        return None;
+                    }
                     self.brightness = b;
                 }
                 None
             }
             ServiceEvent::Custom(CustomSnapshot { id, text }) => {
+                if self.custom.get(&id) == Some(&text) {
+                    return None;
+                }
                 self.custom.insert(id, text);
                 None
             }
             ServiceEvent::TrayItems(items) => {
+                if self.tray_items == items {
+                    return None;
+                }
                 self.tray_items = items;
                 None
             }
@@ -1035,6 +1091,36 @@ impl App {
             other => Some(widgets::with_clicks(el, other.clone(), &clicks)),
         }
     }
+}
+
+/// Push service events into iced as they arrive (no polling timer).
+fn service_subscription(slot: ServiceRxSlot) -> Subscription<Message> {
+    Subscription::run_with(slot, |slot| {
+        let slot = slot.clone();
+        stream::channel(64, async move |mut output| {
+            let mut rx = loop {
+                if let Some(rx) = slot.take_rx() {
+                    break rx;
+                }
+                // Subscription rebuilt before rx was installed — wait briefly.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            loop {
+                let Some(first) = rx.recv().await else {
+                    break;
+                };
+                let mut batch = vec![first];
+                // Brief coalesce so a burst (niri + sys + tray) is one redraw.
+                tokio::time::sleep(Duration::from_millis(8)).await;
+                while let Ok(more) = rx.try_recv() {
+                    batch.push(more);
+                }
+                if output.send(Message::Services(batch)).await.is_err() {
+                    break;
+                }
+            }
+        })
+    })
 }
 
 fn truncate(s: &str, max: usize) -> String {

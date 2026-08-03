@@ -54,16 +54,16 @@ pub struct BarConfig {
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
-            height: 39,
-            margin: [0, 0, 0, 0],
-            exclusive_zone: 38,
+            height: 42,
+            margin: [6, 10, 0, 10],
+            exclusive_zone: 48,
             anchor: "top".into(),
             output: None,
-            padding: 3,
-            island_gap: 10,
+            padding: 4,
+            island_gap: 12,
             separators: true,
             separator: "│".into(),
-            tray_menu_gap: 0,
+            tray_menu_gap: 4,
         }
     }
 }
@@ -79,6 +79,16 @@ pub struct ThemeConfig {
     pub danger: [f32; 4],
     pub separator: [f32; 4],
     pub island_radius: f32,
+    /// Island outline color (neobrutalism: hard accent border).
+    pub island_border: [f32; 4],
+    /// Island outline width in logical pixels (`0` = hairline / none).
+    pub island_border_width: f32,
+    /// Drop-shadow color for islands (neobrutalism: hard dark offset).
+    pub island_shadow: [f32; 4],
+    /// Shadow offset in logical pixels `[x, y]` (wofi-style hard cast).
+    pub island_shadow_offset: [f32; 2],
+    /// Shadow blur radius (`0` = hard edge).
+    pub island_shadow_blur: f32,
     /// Vertical and horizontal padding inside every module island.
     pub island_padding: [u16; 2],
     /// Outer margin around every module island (vertical, horizontal).
@@ -86,7 +96,8 @@ pub struct ThemeConfig {
     pub font_size: f32,
     /// UI font family (empty = system sans-serif). Example: `"JetBrains Mono"`.
     pub font: String,
-    /// Font for emoji glyphs (volume/brightness). Empty = same as `font`.
+    /// Font for emoji glyphs (brightness, clock). Empty = same as `font`.
+    /// Volume uses Waybar-style Nerd Font icons when a Nerd Font is available.
     pub emoji_font: String,
     /// Height of realtime usage meter bars in logical pixels.
     pub meter_height: f32,
@@ -101,29 +112,36 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
-            background: [0.08, 0.07, 0.04, 0.28],
-            // Warm charcoal with a soft yellow undertone
-            island_background: [0.14, 0.12, 0.08, 0.94],
-            // Buttercream
-            text: [0.97, 0.94, 0.84, 1.0],
-            // Dusty straw
-            muted: [0.66, 0.60, 0.46, 1.0],
-            // Soft pastel yellow
-            accent: [0.93, 0.86, 0.58, 1.0],
-            // Soft apricot
-            danger: [0.90, 0.62, 0.52, 1.0],
-            // Dim honey separator
-            separator: [0.42, 0.38, 0.26, 0.50],
-            island_radius: 8.0,
-            island_padding: [4, 8],
-            island_margin: [0, 0],
+            // Transparent chrome — islands carry the look.
+            background: [0.0, 0.0, 0.0, 0.0],
+            // Deep pastel purple (#322c4a) — matches niri/wofi neobrutalism
+            island_background: [0.196, 0.173, 0.290, 1.0],
+            // #ede8fa
+            text: [0.929, 0.910, 0.980, 1.0],
+            // #b4accf
+            muted: [0.706, 0.675, 0.812, 1.0],
+            // #a894e0
+            accent: [0.659, 0.580, 0.878, 1.0],
+            // #e08eb8
+            danger: [0.878, 0.557, 0.722, 1.0],
+            // #8a7bc4 @ 55%
+            separator: [0.541, 0.482, 0.769, 0.55],
+            island_radius: 0.0,
+            island_border: [0.659, 0.580, 0.878, 1.0],
+            island_border_width: 3.0,
+            // #0a0814 — wofi hard drop shadow
+            island_shadow: [0.039, 0.031, 0.078, 1.0],
+            island_shadow_offset: [6.0, 6.0],
+            island_shadow_blur: 0.0,
+            island_padding: [4, 10],
+            island_margin: [0, 2],
             font_size: 14.0,
-            font: "Georgia".into(),
+            font: "Fira Sans".into(),
             emoji_font: "Noto Color Emoji".into(),
             meter_height: 16.0,
-            meter_width: 5.0,
-            meter_gap: 1.6,
-            meter_bars: 16,
+            meter_width: 4.0,
+            meter_gap: 2.0,
+            meter_bars: 12,
         }
     }
 }

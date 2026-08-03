@@ -16,6 +16,43 @@ pub struct SysSnapshot {
     pub gpu_label: Option<String>,
 }
 
+impl SysSnapshot {
+    /// True when meters would look the same (avoids pointless UI redraws).
+    pub fn visually_eq(&self, other: &Self) -> bool {
+        const EPS: f32 = 0.4;
+        float_eq(self.cpu_percent, other.cpu_percent, EPS)
+            && float_eq(self.memory_percent, other.memory_percent, EPS)
+            && float_eq(self.memory_used_gb, other.memory_used_gb, 0.02)
+            && float_eq(self.memory_total_gb, other.memory_total_gb, 0.02)
+            && opt_float_eq(self.gpu_percent, other.gpu_percent, EPS)
+            && self.gpu_label == other.gpu_label
+            && self.cpu_per_core.len() == other.cpu_per_core.len()
+            && self
+                .cpu_per_core
+                .iter()
+                .zip(other.cpu_per_core.iter())
+                .all(|(a, b)| float_eq(*a, *b, EPS))
+            && self.gpu_per_device.len() == other.gpu_per_device.len()
+            && self
+                .gpu_per_device
+                .iter()
+                .zip(other.gpu_per_device.iter())
+                .all(|(a, b)| float_eq(*a, *b, EPS))
+    }
+}
+
+fn float_eq(a: f32, b: f32, eps: f32) -> bool {
+    (a - b).abs() <= eps
+}
+
+fn opt_float_eq(a: Option<f32>, b: Option<f32>, eps: f32) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => float_eq(a, b, eps),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NetworkSnapshot {
     pub connected: bool,
@@ -38,10 +75,25 @@ pub struct VolumeSnapshot {
     pub device: Option<String>,
 }
 
+impl VolumeSnapshot {
+    pub fn visually_eq(&self, other: &Self) -> bool {
+        self.muted == other.muted
+            && self.bluetooth == other.bluetooth
+            && self.device == other.device
+            && (self.percent - other.percent).abs() < 0.5
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BrightnessSnapshot {
     pub percent: f64,
     pub available: bool,
+}
+
+impl BrightnessSnapshot {
+    pub fn visually_eq(&self, other: &Self) -> bool {
+        self.available == other.available && (self.percent - other.percent).abs() < 0.5
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +102,7 @@ pub struct CustomSnapshot {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrayItemSnapshot {
     pub id: String,
     /// StatusNotifierItem `Id` (application identity).
@@ -64,7 +116,7 @@ pub struct TrayItemSnapshot {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrayPixmap {
     pub width: i32,
     pub height: i32,

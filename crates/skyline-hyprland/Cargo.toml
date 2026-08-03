@@ -8,4 +8,5 @@ description = "Hyprland compositor backend for Skyline"
 [dependencies]
 skyline-core.workspace = true
 hyprland.workspace = true
+tokio.workspace = true
 tracing.workspace = true

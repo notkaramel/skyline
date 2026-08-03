@@ -71,9 +71,16 @@ The running bar watches this file and hot-reloads on save
 format, sys refresh, and custom modules). Changing the compositor
 backend still requires a restart.
 .TP
-.I /usr/local/bin/skyline
-Typical install location when using
-.BR "sudo make install" .
+.I target/release/skyline
+Local release binary from
+.BR "make"
+/
+.BR "make run"
+(no root install).
+.TP
+.I ~/.local/bin/skyline
+Optional user install from
+.BR "make install-user" .
 .SH CONFIGURATION
 Configuration is TOML. Important keys:
 .TP
@@ -278,11 +285,12 @@ make run
 .RE
 .fi
 .PP
-Install the binary system-wide:
+Optional user install (no sudo; default
+.BR ~/.local ):
 .PP
 .nf
 .RS
-sudo make install
+make install-user
 .RE
 .fi
 .PP

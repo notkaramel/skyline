@@ -4393,6 +4393,7 @@ dependencies = [
  "skyline-hyprland",
  "skyline-niri",
  "skyline-services",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4416,6 +4417,7 @@ version = "0.1.0"
 dependencies = [
  "hyprland",
  "skyline-core",
+ "tokio",
  "tracing",
 ]
 
@@ -4425,6 +4427,7 @@ version = "0.1.0"
 dependencies = [
  "niri-ipc",
  "skyline-core",
+ "tokio",
  "tracing",
 ]
 

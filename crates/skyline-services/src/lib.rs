@@ -12,10 +12,10 @@ mod tray;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
 use std::thread;
 
 use skyline_core::{Config, CustomModuleConfig, ServiceEvent};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
 
 pub use audio::{set_mute, set_volume_delta};
@@ -24,8 +24,11 @@ pub use custom::run_click;
 pub use live::apply as apply_live;
 pub use tray::{activate_item, activate_menu, request_menu};
 
+/// Channel used by background services to push UI events.
+pub type ServiceTx = UnboundedSender<ServiceEvent>;
+
 /// Start all background service threads.
-pub fn spawn_all(config: &Config, config_path: PathBuf, tx: Sender<ServiceEvent>) {
+pub fn spawn_all(config: &Config, config_path: PathBuf, tx: ServiceTx) {
     live::init(config);
 
     clock::spawn(tx.clone());
@@ -44,7 +47,7 @@ pub fn spawn_all(config: &Config, config_path: PathBuf, tx: Sender<ServiceEvent>
 }
 
 /// Apply a hot-reloaded config to live service knobs and custom modules.
-pub fn reload_from_config(config: &Config, tx: Sender<ServiceEvent>) {
+pub fn reload_from_config(config: &Config, tx: ServiceTx) {
     live::apply(config);
     custom::reload(config.modules.custom.clone(), tx.clone());
     if config.modules.tray {
@@ -52,7 +55,7 @@ pub fn reload_from_config(config: &Config, tx: Sender<ServiceEvent>) {
     }
 }
 
-pub fn ensure_tray(tx: Sender<ServiceEvent>) {
+pub fn ensure_tray(tx: ServiceTx) {
     let live = live::get();
     if live.tray_started.swap(true, Ordering::SeqCst) {
         return;
