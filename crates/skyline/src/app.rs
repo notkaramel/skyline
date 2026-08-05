@@ -11,13 +11,17 @@ use iced::window::Id;
 use iced::{Element, Event, Length, Subscription, Task};
 use iced::keyboard::{self, key::Named};
 use iced::mouse;
+use iced::Rectangle;
+use iced_layershell::actions::IcedNewPopupSettings;
 use iced_layershell::reexport::{
-    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption, PopupAnchor,
+    PopupGravity,
 };
 use iced_layershell::to_layer_message;
 use skyline_core::{
     BrightnessSnapshot, CompositorState, Config, CustomSnapshot, ModuleKind, NetworkSnapshot,
-    OutputInfo, ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuSnapshot, VolumeSnapshot,
+    OutputInfo, ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuAlign, TrayMenuSnapshot,
+    VolumeSnapshot,
 };
 use skyline_services::ServiceTx;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -25,6 +29,9 @@ use tracing::{info, warn};
 
 use crate::style;
 use crate::widgets;
+
+/// Last bar surface that saw a pointer event (multi-monitor popup parent).
+static LAST_POINTER_WINDOW: Mutex<Option<Id>> = Mutex::new(None);
 
 /// Quiet window before applying coalesced scroll deltas (trackpad-friendly).
 const SCROLL_DEBOUNCE: Duration = Duration::from_millis(70);
@@ -74,8 +81,12 @@ pub struct App {
     tray_items: Vec<TrayItemSnapshot>,
     tray_menu: Option<TrayMenuSnapshot>,
     popup_ids: HashMap<Id, PopupKind>,
+    /// Right-click that is waiting on DBus menu contents.
+    pending_tray: Option<PendingTrayMenu>,
     /// Layer-shell bar surfaces and the output each is pinned to.
     bar_outputs: Mutex<HashMap<Id, String>>,
+    /// Logical width of each bar surface (for `tray_menu_align = "end"`).
+    bar_widths: HashMap<Id, f32>,
     bound_output: Option<String>,
     errors: Vec<String>,
     volume_pending: f64,
@@ -86,11 +97,16 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum PopupKind {
-    /// Fullscreen click-catcher under the tray menu.
-    TrayDismiss,
     TrayMenu { item_id: String },
     /// Hover tip for the clock (`modules.clock.tooltip_format`).
     ClockTooltip,
+}
+
+#[derive(Debug, Clone)]
+struct PendingTrayMenu {
+    item_id: String,
+    bounds: Rectangle,
+    parent: Id,
 }
 
 #[to_layer_message(multi)]
@@ -106,7 +122,7 @@ pub enum Message {
     BrightnessScroll(f64),
     ModuleClick { kind: ModuleKind, right: bool },
     TrayActivate(String),
-    TrayOpenMenu(String),
+    TrayOpenMenu { item_id: String, bounds: Rectangle },
     TrayMenuClick { item_id: String, menu_id: i32 },
     DismissTrayMenus,
     ClockHover(bool),
@@ -139,7 +155,9 @@ impl App {
                 tray_items: Vec::new(),
                 tray_menu: None,
                 popup_ids: HashMap::new(),
+                pending_tray: None,
                 bar_outputs: Mutex::new(HashMap::new()),
+                bar_widths: HashMap::new(),
                 bound_output,
                 errors: Vec::new(),
                 volume_pending: 0.0,
@@ -164,8 +182,18 @@ impl App {
                 {
                     Some(Message::DismissTrayMenus)
                 }
-                Event::Mouse(mouse::Event::ButtonPressed(_)) => {
-                    Some(Message::PointerPressed { window: id })
+                Event::Mouse(mouse::Event::CursorMoved { .. })
+                | Event::Mouse(mouse::Event::ButtonPressed(_))
+                | Event::Mouse(mouse::Event::ButtonReleased(_)) => {
+                    if let Ok(mut last) = LAST_POINTER_WINDOW.lock() {
+                        *last = Some(id);
+                    }
+                    match event {
+                        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                            Some(Message::PointerPressed { window: id })
+                        }
+                        _ => None,
+                    }
                 }
                 Event::Window(iced::window::Event::Opened { size, .. }) => Some(
                     Message::BarOpened {
@@ -173,6 +201,10 @@ impl App {
                         width: Some(size.width),
                     },
                 ),
+                Event::Window(iced::window::Event::Resized(size)) => Some(Message::BarOpened {
+                    id,
+                    width: Some(size.width),
+                }),
                 _ => None,
             }),
             iced::window::close_events().map(Message::WindowClosed),
@@ -264,9 +296,29 @@ impl App {
                 skyline_services::activate_item(&id);
                 dismiss
             }
-            Message::TrayOpenMenu(id) => {
-                skyline_services::request_menu(&id, self.service_tx.clone());
-                Task::none()
+            Message::TrayOpenMenu { item_id, bounds } => {
+                if self
+                    .popup_ids
+                    .values()
+                    .any(|k| matches!(k, PopupKind::TrayMenu { item_id: open } if *open == item_id))
+                {
+                    return self.close_tray_popups();
+                }
+                let parent = LAST_POINTER_WINDOW
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .or_else(|| self.bar_widths.keys().copied().next());
+                let close = self.close_tray_popups();
+                if let Some(parent) = parent {
+                    self.pending_tray = Some(PendingTrayMenu {
+                        item_id: item_id.clone(),
+                        bounds,
+                        parent,
+                    });
+                }
+                skyline_services::request_menu(&item_id, self.service_tx.clone());
+                close
             }
             Message::TrayMenuClick { item_id, menu_id } => {
                 skyline_services::activate_menu(&item_id, menu_id);
@@ -276,38 +328,40 @@ impl App {
             Message::ClockHover(true) => self.open_clock_tooltip(),
             Message::ClockHover(false) => self.close_clock_tooltip(),
             Message::ClosePopup(id) => {
-                self.popup_ids.remove(&id);
-                if self.popup_ids.is_empty() {
+                let kind = self.popup_ids.remove(&id);
+                if matches!(kind, Some(PopupKind::TrayMenu { .. })) {
                     self.tray_menu = None;
+                    self.pending_tray = None;
                 }
                 iced::window::close(id)
             }
             Message::PointerPressed { window } => {
-                // Clicking the bar (or anything that isn't the menu itself) dismisses menus.
-                if self.popup_ids.is_empty() {
+                // Left-click on the bar (not the menu) dismisses tray menus.
+                if self.popup_ids.values().all(|k| !matches!(k, PopupKind::TrayMenu { .. })) {
                     return Task::none();
                 }
-                let on_menu = matches!(
-                    self.popup_ids.get(&window),
-                    Some(PopupKind::TrayMenu { .. })
-                );
-                if on_menu {
+                if matches!(self.popup_ids.get(&window), Some(PopupKind::TrayMenu { .. })) {
                     Task::none()
                 } else {
                     self.close_tray_popups()
                 }
             }
             Message::WindowClosed(id) => {
-                self.popup_ids.remove(&id);
+                let kind = self.popup_ids.remove(&id);
                 if let Ok(mut map) = self.bar_outputs.lock() {
                     map.remove(&id);
                 }
-                if self.popup_ids.is_empty() {
+                self.bar_widths.remove(&id);
+                if matches!(kind, Some(PopupKind::TrayMenu { .. })) {
                     self.tray_menu = None;
+                    self.pending_tray = None;
                 }
                 Task::none()
             }
             Message::BarOpened { id, width } => {
+                if let Some(w) = width {
+                    self.bar_widths.insert(id, w);
+                }
                 if !self.popup_ids.contains_key(&id) {
                     self.pin_bar_output(id, width);
                 }
@@ -425,13 +479,22 @@ impl App {
     }
 
     fn close_tray_popups(&mut self) -> Task<Message> {
-        if self.popup_ids.is_empty() && self.tray_menu.is_none() {
-            return Task::none();
-        }
-        let ids: Vec<Id> = self.popup_ids.keys().copied().collect();
-        self.popup_ids.clear();
+        self.pending_tray = None;
         self.tray_menu = None;
-        Task::batch(ids.into_iter().map(iced::window::close))
+        let ids: Vec<Id> = self
+            .popup_ids
+            .iter()
+            .filter(|(_, kind)| matches!(kind, PopupKind::TrayMenu { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            self.popup_ids.remove(id);
+        }
+        if ids.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(ids.into_iter().map(iced::window::close))
+        }
     }
 
     fn clock_tooltip_text(&self) -> String {
@@ -569,11 +632,104 @@ impl App {
         }
     }
 
-    fn tray_menu_margin(&self) -> (i32, i32, i32, i32) {
+    fn open_tray_menu_popup(&mut self, item_id: String) -> Task<Message> {
+        let close = self
+            .popup_ids
+            .iter()
+            .filter(|(_, kind)| matches!(kind, PopupKind::TrayMenu { .. }))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in &close {
+            self.popup_ids.remove(id);
+        }
+        let mut tasks: Vec<Task<Message>> = close.into_iter().map(iced::window::close).collect();
+
+        let entries = self
+            .tray_menu
+            .as_ref()
+            .map(|m| m.entries.iter().filter(|e| e.visible).count())
+            .unwrap_or(1)
+            .max(1);
+        let shadow_x = self.config.theme.island_shadow_offset[0].max(0.0)
+            + self.config.theme.island_shadow_blur.max(0.0);
+        let shadow_y = self.config.theme.island_shadow_offset[1].max(0.0)
+            + self.config.theme.island_shadow_blur.max(0.0);
+        let width = (240.0 + shadow_x).ceil() as u32;
+        let height = (entries as f32 * 28.0 + 20.0 + shadow_y).ceil() as u32;
+        let height = height.clamp(36, 420);
+
+        let pending = self.pending_tray.take();
+        let parent = pending
+            .as_ref()
+            .map(|p| p.parent)
+            .or_else(|| LAST_POINTER_WINDOW.lock().ok().and_then(|g| *g))
+            .or_else(|| self.bar_widths.keys().copied().next());
+        let Some(parent) = parent else {
+            return Task::batch(tasks);
+        };
+
         let gap = self.config.bar.tray_menu_gap.max(0);
-        let top = self.config.bar.margin[0] + self.config.bar.height as i32 + gap;
-        let right = self.config.bar.margin[1];
-        (top, right, 0, 0)
+        let bar_h = self.config.bar.height as i32;
+        let bottom_bar = self.config.bar.anchor == "bottom";
+        let (anchor_rect, popup_anchor, gravity) = match self.config.bar.tray_menu_align {
+            TrayMenuAlign::Icon => {
+                let bounds = pending
+                    .as_ref()
+                    .map(|p| p.bounds)
+                    .unwrap_or(Rectangle::new(
+                        iced::Point::ORIGIN,
+                        iced::Size::new(1.0, bar_h as f32),
+                    ));
+                let x = bounds.x.round() as i32;
+                let w = bounds.width.max(1.0).round() as i32;
+                if bottom_bar {
+                    (
+                        (x, -gap, w, bar_h + gap),
+                        PopupAnchor::TopLeft,
+                        PopupGravity::TopRight,
+                    )
+                } else {
+                    (
+                        (x, 0, w, bar_h + gap),
+                        PopupAnchor::BottomLeft,
+                        PopupGravity::BottomRight,
+                    )
+                }
+            }
+            TrayMenuAlign::End => {
+                let bar_w = self
+                    .bar_widths
+                    .get(&parent)
+                    .copied()
+                    .or_else(|| pending.as_ref().map(|p| p.bounds.x + p.bounds.width + 8.0))
+                    .unwrap_or(1.0)
+                    .max(1.0)
+                    .round() as i32;
+                if bottom_bar {
+                    (
+                        (bar_w.saturating_sub(1), -gap, 1, bar_h + gap),
+                        PopupAnchor::TopRight,
+                        PopupGravity::TopLeft,
+                    )
+                } else {
+                    (
+                        (bar_w.saturating_sub(1), 0, 1, bar_h + gap),
+                        PopupAnchor::BottomRight,
+                        PopupGravity::BottomLeft,
+                    )
+                }
+            }
+        };
+
+        let menu_id = Id::unique();
+        self.popup_ids.insert(menu_id, PopupKind::TrayMenu { item_id });
+        tasks.push(Task::done(Message::NewPopUp {
+            settings: IcedNewPopupSettings::new(parent, (width, height), anchor_rect)
+                .anchor(popup_anchor)
+                .gravity(gravity),
+            id: menu_id,
+        }));
+        Task::batch(tasks)
     }
 
     fn flush_volume_scroll(&mut self, force: bool) {
@@ -710,64 +866,22 @@ impl App {
             }
             ServiceEvent::TrayMenu(menu) => {
                 let item_id = menu.item_id.clone();
-                self.tray_menu = Some(menu);
-                // Close any existing tray popup first.
-                let mut tasks: Vec<Task<Message>> = self
-                    .popup_ids
-                    .keys()
-                    .copied()
-                    .map(iced::window::close)
-                    .collect();
-                self.popup_ids.clear();
-
-                // Fullscreen dismiss layer under the menu catches outside clicks.
-                let dismiss_id = Id::unique();
-                self.popup_ids.insert(dismiss_id, PopupKind::TrayDismiss);
-                tasks.push(Task::done(Message::NewLayerShell {
-                    settings: NewLayerShellSettings {
-                        size: None,
-                        exclusive_zone: Some(0),
-                        anchor: Anchor::Top
-                            | Anchor::Bottom
-                            | Anchor::Left
-                            | Anchor::Right,
-                        layer: Layer::Top,
-                        margin: Some((0, 0, 0, 0)),
-                        keyboard_interactivity: KeyboardInteractivity::None,
-                        events_transparent: false,
-                        ..Default::default()
-                    },
-                    id: dismiss_id,
-                }));
-
-                let menu_id = Id::unique();
-                self.popup_ids.insert(
-                    menu_id,
-                    PopupKind::TrayMenu {
-                        item_id: item_id.clone(),
-                    },
+                let already_open = self.popup_ids.values().any(
+                    |k| matches!(k, PopupKind::TrayMenu { item_id: open } if *open == item_id),
                 );
-                let entries = self
-                    .tray_menu
+                if already_open {
+                    self.tray_menu = Some(menu);
+                    return None;
+                }
+                if self
+                    .pending_tray
                     .as_ref()
-                    .map(|m| m.entries.len())
-                    .unwrap_or(1)
-                    .max(1);
-                let height = (entries as u32 * 28 + 16).min(400);
-                let (top, right, bottom, left) = self.tray_menu_margin();
-                tasks.push(Task::done(Message::NewLayerShell {
-                    settings: NewLayerShellSettings {
-                        size: Some((240, height)),
-                        exclusive_zone: None,
-                        anchor: Anchor::Top | Anchor::Right,
-                        layer: Layer::Overlay,
-                        margin: Some((top, right, bottom, left)),
-                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
-                        ..Default::default()
-                    },
-                    id: menu_id,
-                }));
-                Some(Task::batch(tasks))
+                    .is_none_or(|p| p.item_id != item_id)
+                {
+                    return None;
+                }
+                self.tray_menu = Some(menu);
+                Some(self.open_tray_menu_popup(item_id))
             }
             ServiceEvent::ConfigReloaded(config) => Some(self.apply_config_reload(*config)),
             ServiceEvent::Error(err) => {
@@ -783,16 +897,6 @@ impl App {
 
     pub fn view(&self, id: Id) -> Element<'_, Message> {
         match self.popup_ids.get(&id) {
-            Some(PopupKind::TrayDismiss) => {
-                return mouse_area(
-                    container(space::Space::new())
-                        .width(Length::Fill)
-                        .height(Length::Fill),
-                )
-                .on_press(Message::DismissTrayMenus)
-                .on_right_press(Message::DismissTrayMenus)
-                .into();
-            }
             Some(PopupKind::TrayMenu { item_id }) => {
                 return widgets::tray_menu_popup(
                     item_id,

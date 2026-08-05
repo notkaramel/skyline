@@ -63,3 +63,8 @@
 [2026-07-30 19:44:40.141] [info] Quitting.
 [2026-07-30 19:44:40.189] [info] Hyprland IPC stopping...
 [2026-07-30 19:44:40.189] [error] Hyprland IPC: Couldn't shutdown socket
+[2m2026-08-05T04:58:27.801199Z[0m [32m INFO[0m [2mskyline[0m[2m:[0m config loaded from /home/antoine/.config/skyline/config.toml (anchor=top, height=42)
+[2m2026-08-05T04:58:27.804225Z[0m [32m INFO[0m [2mskyline_services[0m[2m:[0m skyline services started
+[2m2026-08-05T04:58:27.804262Z[0m [32m INFO[0m [2mskyline[0m[2m:[0m using niri compositor backend
+[2m2026-08-05T04:58:27.804680Z[0m [32m INFO[0m [2mskyline_services::config_watch[0m[2m:[0m watching config /home/antoine/.config/skyline/config.toml
+[2m2026-08-05T04:58:27.811137Z[0m [32m INFO[0m [2mskyline_services::tray[0m[2m:[0m system tray host ready

@@ -1,0 +1,15 @@
+---
+description: Constraints when touching the vendored SNI tray crate
+globs: vendor/system-tray/**/*.rs
+alwaysApply: false
+---
+
+# Vendored system-tray
+
+This crate is patched on purpose:
+
+- Soft-fail malformed `IconPixmap` / tooltip properties
+- Do not drop the whole item or abort the host on one bad client
+- Keep the registration stream alive
+
+Do not revert those behaviors. Do not enable `dbusmenu-gtk3`. Skyline renders menus in iced. Prefer fixing parsing/robustness here over workarounds in `skyline-services/src/tray.rs`.

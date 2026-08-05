@@ -47,8 +47,10 @@ pub struct BarConfig {
     pub separators: bool,
     /// Separator glyph between modules (when `separators` is true).
     pub separator: String,
-    /// Extra pixels between the bar and a tray context menu (top-anchored bar).
+    /// Extra pixels between the bar and a tray context menu.
     pub tray_menu_gap: i32,
+    /// Where tray context menus are anchored.
+    pub tray_menu_align: TrayMenuAlign,
 }
 
 impl Default for BarConfig {
@@ -64,8 +66,20 @@ impl Default for BarConfig {
             separators: true,
             separator: "│".into(),
             tray_menu_gap: 4,
+            tray_menu_align: TrayMenuAlign::Icon,
         }
     }
+}
+
+/// Horizontal placement of StatusNotifierItem context menus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrayMenuAlign {
+    /// Draw the menu directly below (top bar) or above (bottom bar) the icon.
+    #[default]
+    Icon,
+    /// Draw the menu at the trailing edge of the bar (right on LTR layouts).
+    End,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,6 +516,9 @@ pub struct TaskbarConfig {
     pub padding: f32,
     /// Gap between icon wrappers.
     pub gap: f32,
+    /// Focused chip background border width. When unset, uses theme `island_border_width`.
+    #[serde(default)]
+    pub border_width: Option<f32>,
     /// Max icons shown (0 = unlimited).
     pub max_items: usize,
     #[serde(flatten)]
@@ -514,6 +531,7 @@ impl Default for TaskbarConfig {
             width: 24.0,
             padding: 2.0,
             gap: 4.0,
+            border_width: None,
             max_items: 12,
             clicks: ClickActions::default(),
         }

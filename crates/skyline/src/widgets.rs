@@ -3,9 +3,12 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::widget::{Tree, Widget};
+use iced::advanced::{clipboard, mouse as adv_mouse, overlay, renderer, Shell};
 use iced::widget::{button, container, image, mouse_area, row, space, svg, text, Column};
 use iced::widget::container::Style as ContainerStyle;
-use iced::{Background, Border, Color, Element, Length};
+use iced::{Background, Border, Color, Element, Event, Length, Rectangle, Size, Vector};
 use skyline_core::{
     ClickActions, CompositorState, ModuleKind, TaskbarConfig, ThemeConfig, TrayItemSnapshot,
     TrayMenuSnapshot, TrayPixmap, WindowInfo,
@@ -69,9 +72,10 @@ pub fn taskbar<'a>(
     let icon = cfg.width.max(8.0);
     let pad = cfg.padding.max(0.0);
     let gap = cfg.gap.max(0.0);
+    let border_width = cfg.border_width;
     let buttons = windows
         .into_iter()
-        .map(|win| taskbar_chip(win, theme, icon, pad));
+        .map(|win| taskbar_chip(win, theme, icon, pad, border_width));
 
     // Shrink-wrapped row of icon chips (Waybar-style).
     container(
@@ -88,12 +92,13 @@ fn taskbar_chip<'a>(
     theme: &'a ThemeConfig,
     icon: f32,
     pad: f32,
+    border_width: Option<f32>,
 ) -> Element<'a, Message> {
     let focused = win.focused;
     // Real container padding so the focus border sits outside the icon inset.
     let chip = container(window_icon_el(win, theme, icon))
         .padding(pad)
-        .style(move |_| style::taskbar_chip_style(theme, focused));
+        .style(move |_| style::taskbar_chip_style(theme, focused, border_width));
 
     mouse_area(chip)
         .on_press(Message::FocusWindow(win.id))
@@ -605,16 +610,159 @@ pub fn tray_icons<'a>(
         };
         let id = item.id.clone();
         let id_menu = item.id.clone();
-        mouse_area(
-            button(content)
-                .padding([0, 4])
-                .style(style::ghost_button)
-                .on_press(Message::TrayActivate(id)),
-        )
-        .on_right_press(Message::TrayOpenMenu(id_menu))
+        let hit = button(content)
+            .padding([0, 4])
+            .style(style::ghost_button)
+            .on_press(Message::TrayActivate(id));
+        TrayIconHit::new(hit, move |bounds| Message::TrayOpenMenu {
+            item_id: id_menu.clone(),
+            bounds,
+        })
         .into()
     });
     row(icons).spacing(4).align_y(iced::Alignment::Center).into()
+}
+
+/// Forwards left-clicks to the child and reports layout bounds on right-click.
+struct TrayIconHit<'a, Message> {
+    content: Element<'a, Message>,
+    on_right: Box<dyn Fn(Rectangle) -> Message + 'a>,
+}
+
+impl<'a, Message> TrayIconHit<'a, Message> {
+    fn new(
+        content: impl Into<Element<'a, Message>>,
+        on_right: impl Fn(Rectangle) -> Message + 'a,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            on_right: Box::new(on_right),
+        }
+    }
+}
+
+impl<Message> Widget<Message, iced::Theme, iced::Renderer> for TrayIconHit<'_, Message>
+where
+    Message: Clone,
+{
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: adv_mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn clipboard::Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+        if shell.is_event_captured() {
+            return;
+        }
+        if let Event::Mouse(adv_mouse::Event::ButtonPressed(adv_mouse::Button::Right)) = event {
+            if cursor.is_over(layout.bounds()) {
+                shell.publish((self.on_right)(layout.bounds()));
+                shell.capture_event();
+            }
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: adv_mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> adv_mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: adv_mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<'a, Message> From<TrayIconHit<'a, Message>> for Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    fn from(value: TrayIconHit<'a, Message>) -> Self {
+        Element::new(value)
+    }
 }
 
 fn tray_handle(item: &TrayItemSnapshot) -> Option<iced::widget::image::Handle> {

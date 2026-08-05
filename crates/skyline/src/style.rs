@@ -269,10 +269,16 @@ pub fn workspace_button(
     }
 }
 
-pub fn taskbar_chip_style(theme: &ThemeConfig, focused: bool) -> ContainerStyle {
+pub fn taskbar_chip_style(
+    theme: &ThemeConfig,
+    focused: bool,
+    border_width: Option<f32>,
+) -> ContainerStyle {
     let radius = theme.island_radius;
     let border_w = if focused {
-        theme.island_border_width.max(2.0).min(4.0)
+        border_width
+            .unwrap_or(theme.island_border_width)
+            .max(0.0)
     } else {
         0.0
     };

@@ -12,6 +12,8 @@ island_gap = 12
 separators = true
 separator = "│"
 tray_menu_gap = 4
+# "icon" = under the clicked tray icon; "end" = trailing edge of the bar
+tray_menu_align = "icon"
 
 [theme]
 # Colors from wofi/niri: deep purple panels, lilac borders, soft blue accent
@@ -71,6 +73,7 @@ refresh_ms = 1000
 width = 22.0
 padding = 3.0
 gap = 4.0
+border_width = 3.0
 max_items = 12
 
 [modules.window]

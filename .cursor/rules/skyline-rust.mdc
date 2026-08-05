@@ -1,0 +1,17 @@
+---
+description: Core Skyline Rust conventions for all crates
+globs: crates/**/*.rs
+alwaysApply: false
+---
+
+# Skyline Rust
+
+- I/O and subprocesses belong in `skyline-services` or compositor crates, not in `view`.
+- Push `ServiceEvent`s; skip send/apply when the snapshot is visually unchanged.
+- Prefer OS events over polling (exception: sysinfo `refresh_ms`).
+- Named threads via `spawn_named` / `spawn_tokio`. Log with `tracing`.
+- Config structs: `#[serde(default)]`, flatten `ClickActions` for clicks.
+- `examples/config.toml` is embedded — update it with any new key.
+- Do not parse `EXAMPLE_TOML` inside `Config::default()` (serde recursion).
+- Do not edit `vendor/system-tray` unless fixing SNI host parsing.
+- iced: `mouse_area` + centered `container` for glyph rows; avoid padded `button`s that drop text off the island midline.

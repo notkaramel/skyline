@@ -1,0 +1,16 @@
+---
+description: Keep Skyline config schema, example TOML, and docs aligned
+globs: examples/config.toml,crates/skyline-core/src/config.rs,docs/skyline.1,README.md
+alwaysApply: false
+---
+
+# Config sync
+
+When adding or renaming a TOML key:
+
+1. Update the struct + `Default` in `crates/skyline-core/src/config.rs`
+2. Update `examples/config.toml` (embedded in the binary)
+3. Document in `README.md` and `docs/skyline.1` if user-visible
+4. If services must see it without restart, add a knob in `live.rs` and apply it in `reload_from_config`
+
+Hot-reload covers theme, modules, bar geometry, clock format, sys refresh, custom modules, and clicks. Compositor `backend` still requires a process restart.

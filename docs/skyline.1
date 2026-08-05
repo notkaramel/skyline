@@ -104,7 +104,10 @@ for floating islands),
 .BR │ ),
 .BR tray_menu_gap
 (pixels between the bar and a tray context menu; default
-.BR 4 ).
+.BR 4 ),
+.BR tray_menu_align
+(\fIicon\fR draws the menu under the clicked tray icon;
+\fIend\fR pins it to the trailing edge of the bar).
 .TP
 .B [theme]
 RGBA float arrays in 0..=1 for
@@ -117,13 +120,22 @@ RGBA float arrays in 0..=1 for
 .BR separator ,
 plus
 .BR island_radius ,
+.BR island_border ,
+.BR island_border_width ,
+.BR island_shadow ,
+.BR island_shadow_offset
+(x, y),
+.BR island_shadow_blur
+(0 = hard cast),
 .BR island_padding
 (vertical, horizontal; shared by every module island),
+.BR island_margin
+(vertical, horizontal outer margin),
 .BR font_size ,
 .BR font
 (UI family; empty = system default),
 .BR emoji_font
-(volume/brightness glyphs; empty = same as
+(brightness glyph; empty = same as
 .BR font ),
 .BR meter_height ,
 .BR meter_width ,
@@ -131,6 +143,9 @@ plus
 and
 .BR meter_bars
 (cava-style CPU/RAM/GPU meters).
+Volume icons use a Nerd Font when
+.B fc-list
+finds one.
 Per-meter
 .B [modules.cpu]
 /
@@ -201,17 +216,26 @@ truncates the focused window title.
 .B [modules.taskbar]
 Icon strip of open windows on the active workspace of each monitor.
 .BR width
-(uniform square wrapper size in logical pixels; the strip grows with icon count),
+(uniform square wrapper size in logical pixels; alias
+.BR icon_size ;
+the strip grows with icon count),
 .BR padding
 (inset between wrapper and icon),
 .BR gap ,
+.BR border_width
+(focused chip outline; unset uses theme
+.BR island_border_width ),
 and
 .BR max_items .
 Left-click focuses the window (niri / Hyprland).
 .TP
 .B [modules.network]
+.B show_name
+prefers Wi-Fi SSID / ethernet label over the interface name.
 .B show_strength
 toggles signal percent when available.
+.B max_chars
+truncates the label.
 .TP
 .B on_click / on_right_click
 Most module sections accept optional shell commands run on left or right
