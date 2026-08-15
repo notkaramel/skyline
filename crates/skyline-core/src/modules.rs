@@ -102,6 +102,30 @@ pub struct CustomSnapshot {
     pub text: String,
 }
 
+/// Current conditions from wttr.in (`format=j1`). Stores both °C and °F so the
+/// configured unit can hot-reload without refetching.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct WeatherSnapshot {
+    pub emoji: String,
+    pub condition: String,
+    pub location: String,
+    pub temp_c: f32,
+    pub temp_f: f32,
+    pub feels_c: f32,
+    pub feels_f: f32,
+    pub humidity: Option<u8>,
+    pub wind_kmph: Option<f32>,
+    pub wind_mph: Option<f32>,
+    pub wind_dir: Option<String>,
+    pub precip_mm: Option<f32>,
+    pub pressure_hpa: Option<f32>,
+    pub uv_index: Option<u8>,
+    pub high_c: Option<f32>,
+    pub high_f: Option<f32>,
+    pub low_c: Option<f32>,
+    pub low_f: Option<f32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrayItemSnapshot {
     pub id: String,
@@ -151,6 +175,7 @@ pub enum ServiceEvent {
     Volume(VolumeSnapshot),
     Brightness(BrightnessSnapshot),
     Custom(CustomSnapshot),
+    Weather(WeatherSnapshot),
     TrayItems(Vec<TrayItemSnapshot>),
     TrayMenu(TrayMenuSnapshot),
     /// Config file changed and parsed successfully.

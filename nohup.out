@@ -68,3 +68,12 @@
 [2m2026-08-05T04:58:27.804262Z[0m [32m INFO[0m [2mskyline[0m[2m:[0m using niri compositor backend
 [2m2026-08-05T04:58:27.804680Z[0m [32m INFO[0m [2mskyline_services::config_watch[0m[2m:[0m watching config /home/antoine/.config/skyline/config.toml
 [2m2026-08-05T04:58:27.811137Z[0m [32m INFO[0m [2mskyline_services::tray[0m[2m:[0m system tray host ready
+[2m2026-08-12T00:33:58.804553Z[0m [32m INFO[0m [2mskyline[0m[2m:[0m config loaded from /home/antoine/.config/skyline/config.toml (anchor=top, height=42)
+[2m2026-08-12T00:33:58.807661Z[0m [32m INFO[0m [2mskyline_services[0m[2m:[0m skyline services started
+[2m2026-08-12T00:33:58.807840Z[0m [32m INFO[0m [2mskyline_services::config_watch[0m[2m:[0m watching config /home/antoine/.config/skyline/config.toml
+[2m2026-08-12T00:33:58.807935Z[0m [32m INFO[0m [2mskyline[0m[2m:[0m using niri compositor backend
+[2m2026-08-12T00:33:58.815306Z[0m [32m INFO[0m [2mskyline_services::tray[0m[2m:[0m system tray host ready
+[2m2026-08-12T01:13:45.954094Z[0m [32m INFO[0m [2mskyline_services::config_watch[0m[2m:[0m config reloaded from /home/antoine/.config/skyline/config.toml
+[2m2026-08-12T01:13:45.963623Z[0m [32m INFO[0m [2mskyline::app[0m[2m:[0m applied hot-reloaded config
+[2m2026-08-12T01:14:01.094049Z[0m [32m INFO[0m [2mskyline_services::config_watch[0m[2m:[0m config reloaded from /home/antoine/.config/skyline/config.toml
+[2m2026-08-12T01:14:01.103535Z[0m [32m INFO[0m [2mskyline::app[0m[2m:[0m applied hot-reloaded config

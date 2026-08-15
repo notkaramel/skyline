@@ -6,22 +6,19 @@ use std::time::{Duration, Instant};
 use chrono::Local;
 use iced::futures::SinkExt;
 use iced::stream;
-use iced::widget::{container, mouse_area, row, space, text};
+use iced::widget::{container, row, space, text};
 use iced::window::Id;
 use iced::{Element, Event, Length, Subscription, Task};
 use iced::keyboard::{self, key::Named};
 use iced::mouse;
 use iced::Rectangle;
 use iced_layershell::actions::IcedNewPopupSettings;
-use iced_layershell::reexport::{
-    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption, PopupAnchor,
-    PopupGravity,
-};
+use iced_layershell::reexport::{Anchor, PopupAnchor, PopupGravity};
 use iced_layershell::to_layer_message;
 use skyline_core::{
     BrightnessSnapshot, CompositorState, Config, CustomSnapshot, ModuleKind, NetworkSnapshot,
-    OutputInfo, ServiceEvent, SysSnapshot, TrayItemSnapshot, TrayMenuAlign, TrayMenuSnapshot,
-    VolumeSnapshot,
+    OutputInfo, ServiceEvent, SysSnapshot, ThemeConfig, TrayItemSnapshot, TrayMenuAlign,
+    TrayMenuSnapshot, VolumeSnapshot, WeatherSnapshot,
 };
 use skyline_services::ServiceTx;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -77,6 +74,7 @@ pub struct App {
     network: NetworkSnapshot,
     volume: VolumeSnapshot,
     brightness: BrightnessSnapshot,
+    weather: WeatherSnapshot,
     custom: HashMap<String, String>,
     tray_items: Vec<TrayItemSnapshot>,
     tray_menu: Option<TrayMenuSnapshot>,
@@ -95,11 +93,17 @@ pub struct App {
     brightness_last_input: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoverTipKind {
+    Clock,
+    Weather,
+}
+
 #[derive(Debug, Clone)]
 pub enum PopupKind {
     TrayMenu { item_id: String },
-    /// Hover tip for the clock (`modules.clock.tooltip_format`).
-    ClockTooltip,
+    /// Hover tip anchored under a module (clock / weather).
+    HoverTooltip { kind: HoverTipKind },
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +129,11 @@ pub enum Message {
     TrayOpenMenu { item_id: String, bounds: Rectangle },
     TrayMenuClick { item_id: String, menu_id: i32 },
     DismissTrayMenus,
-    ClockHover(bool),
+    HoverTooltip {
+        kind: HoverTipKind,
+        enter: bool,
+        bounds: Rectangle,
+    },
     ClosePopup(Id),
     PointerPressed { window: Id },
     BarOpened { id: Id, width: Option<f32> },
@@ -151,6 +159,7 @@ impl App {
                 network: NetworkSnapshot::default(),
                 volume: VolumeSnapshot::default(),
                 brightness: BrightnessSnapshot::default(),
+                weather: WeatherSnapshot::default(),
                 custom: HashMap::new(),
                 tray_items: Vec::new(),
                 tray_menu: None,
@@ -325,8 +334,16 @@ impl App {
                 self.close_tray_popups()
             }
             Message::DismissTrayMenus => self.close_tray_popups(),
-            Message::ClockHover(true) => self.open_clock_tooltip(),
-            Message::ClockHover(false) => self.close_clock_tooltip(),
+            Message::HoverTooltip {
+                kind,
+                enter: true,
+                bounds,
+            } => self.open_hover_tooltip(kind, bounds),
+            Message::HoverTooltip {
+                kind,
+                enter: false,
+                ..
+            } => self.close_hover_tooltip(kind),
             Message::ClosePopup(id) => {
                 let kind = self.popup_ids.remove(&id);
                 if matches!(kind, Some(PopupKind::TrayMenu { .. })) {
@@ -503,11 +520,27 @@ impl App {
             .to_string()
     }
 
-    fn close_clock_tooltip(&mut self) -> Task<Message> {
+    fn hover_tooltip_lines(&self, kind: HoverTipKind) -> Vec<String> {
+        match kind {
+            HoverTipKind::Clock => {
+                let fmt = self.config.modules.clock.tooltip_format.trim();
+                if fmt.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.clock_tooltip_text()]
+                }
+            }
+            HoverTipKind::Weather => {
+                widgets::weather_tooltip_lines(&self.weather, self.config.modules.weather.unit)
+            }
+        }
+    }
+
+    fn close_hover_tooltip(&mut self, kind: HoverTipKind) -> Task<Message> {
         let ids: Vec<Id> = self
             .popup_ids
             .iter()
-            .filter(|(_, kind)| matches!(kind, PopupKind::ClockTooltip))
+            .filter(|(_, k)| matches!(k, PopupKind::HoverTooltip { kind: open } if *open == kind))
             .map(|(id, _)| *id)
             .collect();
         for id in &ids {
@@ -520,47 +553,78 @@ impl App {
         }
     }
 
-    fn open_clock_tooltip(&mut self) -> Task<Message> {
-        let fmt = self.config.modules.clock.tooltip_format.trim();
-        if fmt.is_empty() {
+    fn close_all_hover_tooltips(&mut self) -> Task<Message> {
+        let ids: Vec<Id> = self
+            .popup_ids
+            .iter()
+            .filter(|(_, k)| matches!(k, PopupKind::HoverTooltip { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            self.popup_ids.remove(id);
+        }
+        if ids.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(ids.into_iter().map(iced::window::close))
+        }
+    }
+
+    fn open_hover_tooltip(&mut self, kind: HoverTipKind, bounds: Rectangle) -> Task<Message> {
+        let lines = self.hover_tooltip_lines(kind);
+        if lines.is_empty() {
             return Task::none();
         }
         if self
             .popup_ids
             .values()
-            .any(|k| matches!(k, PopupKind::ClockTooltip))
+            .any(|k| matches!(k, PopupKind::HoverTooltip { kind: open } if *open == kind))
         {
             return Task::none();
         }
 
-        let tip = self.clock_tooltip_text();
-        let width = ((tip.chars().count() as u32).saturating_mul(9) + 28).clamp(120, 480);
-        let height = (self.config.theme.font_size as u32 + 18).max(28);
+        let close_other = self.close_all_hover_tooltips();
+
+        let parent = LAST_POINTER_WINDOW
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .or_else(|| self.bar_widths.keys().copied().next());
+        let Some(parent) = parent else {
+            return close_other;
+        };
+
+        let (width, height) = tooltip_popup_size(&lines, &self.config.theme);
         let gap = self.config.bar.tray_menu_gap.max(0);
-        let (anchor, margin) = if self.config.bar.anchor == "bottom" {
-            let bottom = self.config.bar.margin[2] + self.config.bar.height as i32 + gap;
-            (Anchor::Bottom, (0, 0, bottom, 0))
+        let bar_h = self.config.bar.height as i32;
+        let x = bounds.x.round() as i32;
+        let w = bounds.width.max(1.0).round() as i32;
+        let (anchor_rect, popup_anchor, gravity) = if self.config.bar.anchor == "bottom" {
+            (
+                (x, -gap, w, bar_h + gap),
+                PopupAnchor::TopLeft,
+                PopupGravity::TopRight,
+            )
         } else {
-            let top = self.config.bar.margin[0] + self.config.bar.height as i32 + gap;
-            (Anchor::Top, (top, 0, 0, 0))
+            (
+                (x, 0, w, bar_h + gap),
+                PopupAnchor::BottomLeft,
+                PopupGravity::BottomRight,
+            )
         };
 
         let id = Id::unique();
-        self.popup_ids.insert(id, PopupKind::ClockTooltip);
-        Task::done(Message::NewLayerShell {
-            settings: NewLayerShellSettings {
-                size: Some((width, height)),
-                exclusive_zone: Some(0),
-                anchor,
-                layer: Layer::Overlay,
-                margin: Some(margin),
-                keyboard_interactivity: KeyboardInteractivity::None,
-                events_transparent: true,
-                output_option: OutputOption::LastOutput,
-                ..Default::default()
-            },
-            id,
-        })
+        self.popup_ids
+            .insert(id, PopupKind::HoverTooltip { kind });
+        Task::batch([
+            close_other,
+            Task::done(Message::NewPopUp {
+                settings: IcedNewPopupSettings::new(parent, (width, height), anchor_rect)
+                    .anchor(popup_anchor)
+                    .gravity(gravity),
+                id,
+            }),
+        ])
     }
 
     fn apply_config_reload(&mut self, config: Config) -> Task<Message> {
@@ -857,6 +921,13 @@ impl App {
                 self.custom.insert(id, text);
                 None
             }
+            ServiceEvent::Weather(snap) => {
+                if self.weather == snap {
+                    return None;
+                }
+                self.weather = snap;
+                None
+            }
             ServiceEvent::TrayItems(items) => {
                 if self.tray_items == items {
                     return None;
@@ -904,8 +975,11 @@ impl App {
                     &self.config.theme,
                 );
             }
-            Some(PopupKind::ClockTooltip) => {
-                return widgets::clock_tooltip(self.clock_tooltip_text(), &self.config.theme);
+            Some(PopupKind::HoverTooltip { kind }) => {
+                return widgets::hover_tooltip(
+                    self.hover_tooltip_lines(*kind),
+                    &self.config.theme,
+                );
             }
             None => {}
         }
@@ -1037,12 +1111,31 @@ impl App {
                 {
                     Some(clickable)
                 } else {
-                    Some(
-                        mouse_area(clickable)
-                            .on_enter(Message::ClockHover(true))
-                            .on_exit(Message::ClockHover(false))
-                            .into(),
-                    )
+                    Some(widgets::hover_area(
+                        clickable,
+                        |bounds| Message::HoverTooltip {
+                            kind: HoverTipKind::Clock,
+                            enter: true,
+                            bounds,
+                        },
+                        |bounds| Message::HoverTooltip {
+                            kind: HoverTipKind::Clock,
+                            enter: false,
+                            bounds,
+                        },
+                    ))
+                }
+            }
+            ModuleKind::Weather => {
+                if self.weather.emoji.is_empty() && self.weather.condition.is_empty() {
+                    None
+                } else {
+                    Some(widgets::weather(
+                        &self.weather,
+                        self.config.modules.weather.unit,
+                        &self.config.theme,
+                        &clicks,
+                    ))
                 }
             }
             ModuleKind::Cpu => Some(widgets::usage_meter(
@@ -1191,6 +1284,7 @@ impl App {
             | ModuleKind::Taskbar
             | ModuleKind::Tray
             | ModuleKind::Clock
+            | ModuleKind::Weather
             | ModuleKind::Custom(_) => Some(el),
             other => Some(widgets::with_clicks(el, other.clone(), &clicks)),
         }
@@ -1235,4 +1329,14 @@ fn truncate(s: &str, max: usize) -> String {
         let t: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{t}…")
     }
+}
+
+fn tooltip_popup_size(lines: &[String], theme: &ThemeConfig) -> (u32, u32) {
+    let max_chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(8);
+    let shadow_x = theme.island_shadow_offset[0].max(0.0) + theme.island_shadow_blur.max(0.0);
+    let shadow_y = theme.island_shadow_offset[1].max(0.0) + theme.island_shadow_blur.max(0.0);
+    let width = ((max_chars as f32) * 8.5 + 28.0 + shadow_x).ceil() as u32;
+    let line_h = theme.font_size + 4.0;
+    let height = (lines.len() as f32 * line_h + 16.0 + shadow_y).ceil() as u32;
+    (width.clamp(80, 560), height.clamp(28, 420))
 }

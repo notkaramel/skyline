@@ -4,17 +4,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{Tree, Widget};
+use iced::advanced::widget::{tree, Tree, Widget};
 use iced::advanced::{clipboard, mouse as adv_mouse, overlay, renderer, Shell};
 use iced::widget::{button, container, image, mouse_area, row, space, svg, text, Column};
 use iced::widget::container::Style as ContainerStyle;
 use iced::{Background, Border, Color, Element, Event, Length, Rectangle, Size, Vector};
 use skyline_core::{
-    ClickActions, CompositorState, ModuleKind, TaskbarConfig, ThemeConfig, TrayItemSnapshot,
-    TrayMenuSnapshot, TrayPixmap, WindowInfo,
+    ClickActions, CompositorState, ModuleKind, TaskbarConfig, TemperatureUnit, ThemeConfig,
+    TrayItemSnapshot, TrayMenuSnapshot, TrayPixmap, WeatherSnapshot, WindowInfo,
 };
 
-use crate::app::Message;
+use crate::app::{HoverTipKind, Message};
 use crate::style;
 
 /// Cache key → resolved icon path (including negative misses as None).
@@ -393,6 +393,301 @@ pub fn with_clicks<'a>(
         });
     }
     area.into()
+}
+
+/// Reports layout bounds on pointer enter / leave (for xdg-popup tooltips).
+pub fn hover_area<'a>(
+    content: impl Into<Element<'a, Message>>,
+    on_enter: impl Fn(Rectangle) -> Message + 'a,
+    on_exit: impl Fn(Rectangle) -> Message + 'a,
+) -> Element<'a, Message> {
+    HoverArea {
+        content: content.into(),
+        on_enter: Box::new(on_enter),
+        on_exit: Box::new(on_exit),
+    }
+    .into()
+}
+
+struct HoverArea<'a, Message> {
+    content: Element<'a, Message>,
+    on_enter: Box<dyn Fn(Rectangle) -> Message + 'a>,
+    on_exit: Box<dyn Fn(Rectangle) -> Message + 'a>,
+}
+
+#[derive(Default)]
+struct HoverAreaState {
+    hovered: bool,
+}
+
+impl<Message> Widget<Message, iced::Theme, iced::Renderer> for HoverArea<'_, Message>
+where
+    Message: Clone,
+{
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<HoverAreaState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(HoverAreaState::default())
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: adv_mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn clipboard::Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+
+        let over = match event {
+            Event::Mouse(adv_mouse::Event::CursorLeft) => false,
+            _ => cursor.is_over(layout.bounds()),
+        };
+        let state = tree.state.downcast_mut::<HoverAreaState>();
+        if over && !state.hovered {
+            state.hovered = true;
+            shell.publish((self.on_enter)(layout.bounds()));
+        } else if !over && state.hovered {
+            state.hovered = false;
+            shell.publish((self.on_exit)(layout.bounds()));
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: adv_mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> adv_mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: adv_mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        )
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<'a, Message> From<HoverArea<'a, Message>> for Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    fn from(value: HoverArea<'a, Message>) -> Self {
+        Element::new(value)
+    }
+}
+
+pub fn weather<'a>(
+    snap: &'a WeatherSnapshot,
+    unit: TemperatureUnit,
+    theme: &'a ThemeConfig,
+    clicks: &ClickActions,
+) -> Element<'a, Message> {
+    let temp = if unit.is_fahrenheit() {
+        snap.temp_f
+    } else {
+        snap.temp_c
+    };
+    let label = format!("{}°{}", temp.round() as i32, unit.suffix());
+    let content = row![
+        container(
+            text(&snap.emoji)
+                .size(theme.font_size)
+                .font(style::emoji_font(theme))
+                .color(style::rgba(theme.text))
+                .line_height(iced::widget::text::LineHeight::Relative(1.0)),
+        )
+        .height(Length::Fill)
+        .align_y(iced::Alignment::Center),
+        text(label)
+            .size(theme.font_size)
+            .font(style::ui_font(theme))
+            .color(style::rgba(theme.text)),
+    ]
+    .spacing(4)
+    .height(Length::Fill)
+    .align_y(iced::Alignment::Center);
+
+    let clickable = with_clicks(content.into(), ModuleKind::Weather, clicks);
+    hover_area(
+        clickable,
+        |bounds| Message::HoverTooltip {
+            kind: HoverTipKind::Weather,
+            enter: true,
+            bounds,
+        },
+        |bounds| Message::HoverTooltip {
+            kind: HoverTipKind::Weather,
+            enter: false,
+            bounds,
+        },
+    )
+}
+
+pub fn weather_tooltip_lines(snap: &WeatherSnapshot, unit: TemperatureUnit) -> Vec<String> {
+    if snap.emoji.is_empty() && snap.condition.is_empty() {
+        return Vec::new();
+    }
+    let fahrenheit = unit.is_fahrenheit();
+    let temp = if fahrenheit { snap.temp_f } else { snap.temp_c };
+    let feels = if fahrenheit {
+        snap.feels_f
+    } else {
+        snap.feels_c
+    };
+    let mut lines = Vec::new();
+    if !snap.location.is_empty() {
+        lines.push(snap.location.clone());
+    }
+    if snap.condition.is_empty() {
+        lines.push(format!(
+            "{} {}°{}",
+            snap.emoji,
+            temp.round() as i32,
+            unit.suffix()
+        ));
+    } else {
+        lines.push(format!(
+            "{} {} · {}°{}",
+            snap.emoji,
+            snap.condition,
+            temp.round() as i32,
+            unit.suffix()
+        ));
+    }
+    lines.push(format!(
+        "Feels like {}°{}",
+        feels.round() as i32,
+        unit.suffix()
+    ));
+
+    let mut meta = Vec::new();
+    if let Some(h) = snap.humidity {
+        meta.push(format!("Humidity {h}%"));
+    }
+    let wind_spd = if fahrenheit {
+        snap.wind_mph
+    } else {
+        snap.wind_kmph
+    };
+    let wind_unit = if fahrenheit { "mph" } else { "km/h" };
+    match (snap.wind_dir.as_deref(), wind_spd) {
+        (Some(dir), Some(spd)) => meta.push(format!("Wind {dir} {spd:.0} {wind_unit}")),
+        (None, Some(spd)) => meta.push(format!("Wind {spd:.0} {wind_unit}")),
+        _ => {}
+    }
+    if !meta.is_empty() {
+        lines.push(meta.join(" · "));
+    }
+
+    let mut extra = Vec::new();
+    if let Some(p) = snap.precip_mm {
+        if fahrenheit {
+            extra.push(format!("Precip {:.2} in", p / 25.4));
+        } else {
+            extra.push(format!("Precip {p:.1} mm"));
+        }
+    }
+    if let Some(pr) = snap.pressure_hpa {
+        extra.push(format!("Pressure {pr:.0} hPa"));
+    }
+    if !extra.is_empty() {
+        lines.push(extra.join(" · "));
+    }
+
+    let mut hi_lo = Vec::new();
+    if let Some(h) = if fahrenheit { snap.high_f } else { snap.high_c } {
+        hi_lo.push(format!("High {}°", h.round() as i32));
+    }
+    if let Some(l) = if fahrenheit { snap.low_f } else { snap.low_c } {
+        hi_lo.push(format!("Low {}°", l.round() as i32));
+    }
+    if let Some(uv) = snap.uv_index {
+        hi_lo.push(format!("UV {uv}"));
+    }
+    if !hi_lo.is_empty() {
+        lines.push(hi_lo.join(" · "));
+    }
+    lines
 }
 
 pub fn volume<'a>(
@@ -1086,31 +1381,40 @@ fn desktop_icon_name_uncached(key: &str) -> Option<String> {
     None
 }
 
-pub fn clock_tooltip<'a>(tip: String, theme: &'a ThemeConfig) -> Element<'a, Message> {
+pub fn hover_tooltip<'a>(lines: Vec<String>, theme: &'a ThemeConfig) -> Element<'a, Message> {
     let bg = style::rgba(theme.island_background);
     let radius = theme.island_radius;
     let border_w = theme.island_border_width.max(0.0);
     let border_c = style::rgba(theme.island_border);
     let shadow = style::island_shadow(theme);
-    container(
-        text(tip)
-            .size(theme.font_size)
-            .font(style::ui_font(theme))
-            .color(style::rgba(theme.text)),
-    )
-    .padding([6, 12])
-    .center_y(Length::Fill)
-    .style(move |_| ContainerStyle {
-        background: Some(Background::Color(bg)),
-        border: Border {
-            radius: radius.into(),
-            width: border_w,
-            color: border_c,
-        },
-        shadow,
-        ..Default::default()
-    })
-    .into()
+    let mut col = Column::new().spacing(2);
+    for (i, line) in lines.into_iter().enumerate() {
+        let color = if i == 0 {
+            style::rgba(theme.text)
+        } else {
+            style::rgba(theme.muted)
+        };
+        col = col.push(
+            text(line)
+                .size(theme.font_size)
+                .font(style::ui_font(theme))
+                .color(color),
+        );
+    }
+    container(col)
+        .padding([6, 12])
+        .center_y(Length::Fill)
+        .style(move |_| ContainerStyle {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                radius: radius.into(),
+                width: border_w,
+                color: border_c,
+            },
+            shadow,
+            ..Default::default()
+        })
+        .into()
 }
 
 pub fn tray_menu_popup<'a>(

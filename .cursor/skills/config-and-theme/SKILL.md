@@ -64,6 +64,7 @@ recursion.
 Background threads re-read:
 
 - `clock_format`
+- `weather_location`, `weather_interval_ms` (min 60s)
 - `sys_refresh_ms` (min 50)
 - `volume_detect_bluetooth`, `volume_max_percent`
 - `custom_generation` (bump stops old custom loops)

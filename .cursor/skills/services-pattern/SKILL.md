@@ -16,6 +16,7 @@ description: >-
 | Thread | Source | Event |
 | --- | --- | --- |
 | clock | sleep until format would change | `Clock(String)` |
+| weather | `curl` wttr.in `format=j1` on `interval_ms` | `Weather` |
 | sys | `sysinfo` + GPU sysfs/`nvidia-smi` on `refresh_ms` | `Sys` |
 | network | `ip monitor` → else `/sys/class/net` watch | `Network` |
 | audio | Pulse subscribe → else `pactl subscribe` + `wpctl` | `Volume` |

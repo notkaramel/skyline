@@ -56,13 +56,20 @@ backend = "auto"
 
 [modules]
 left = ["workspaces", "taskbar", "window"]
-center = ["clock"]
+center = ["clock", "weather"]
 right = ["tray", "cpu", "memory", "gpu", "network", "brightness", "volume"]
 tray = true
 
 [modules.clock]
 format = "%a %b %d  ·  %I:%M %p"
 tooltip_format = "%Y-%m-%d %I:%M:%S %p"
+
+[modules.weather]
+# Empty location → wttr.in IP geolocation
+# location = "Montreal"
+unit = "c"                 # "c" (default) or "f"
+interval_ms = 600000       # 10 minutes
+on_click = "xdg-open https://wttr.in"
 
 [modules.sys]
 refresh_ms = 1000

@@ -13,6 +13,7 @@ Requires a compositor that implements `wlr-layer-shell` (niri, Hyprland, Sway, �
 - Niri (`EventStream`) and Hyprland compositor backends (auto-detect)
 - Workspaces, icon taskbar, focused window title (per-monitor)
 - Clock with hover tooltip
+- Weather from [wttr.in](https://wttr.in) (emoji + °C/°F, hover details)
 - CPU / RAM / GPU meters (per-core CPU, AMD sysfs / NVIDIA `nvidia-smi`)
 - Network (SSID / ethernet via `ip` + `iw` / iwd / wpa_cli — event-driven)
 - Volume (Pulse/PipeWire subscribe, `wpctl` fallback) and brightness (`brightnessctl`)
@@ -44,6 +45,7 @@ Runtime helpers (optional, feature-dependent):
 | `ip`, `iw` / `iwgetid` / `wpa_cli` / `busctl` (iwd) | network label + signal |
 | `fc-list` | detect a Nerd Font for volume glyphs |
 | `nvidia-smi` | NVIDIA GPU utilization |
+| `curl` | weather module (wttr.in) |
 
 ## Run
 
@@ -78,8 +80,8 @@ Full annotated defaults: [examples/config.toml](examples/config.toml)
 (also written by `skyline --write-example-config` / `make example-config`).
 
 Edits are **hot-reloaded** on save: theme, module lists, separators, scroll steps,
-bar size/margins/exclusive zone, clock format, sys refresh, custom modules, click
-commands. Switching the compositor backend still needs a restart.
+bar size/margins/exclusive zone, clock format, weather location/unit/interval, sys refresh,
+custom modules, click commands. Switching the compositor backend still needs a restart.
 
 CLI:
 
@@ -94,11 +96,11 @@ After `make install-user`, see `man skyline` if `~/.local/share/man` is on your 
 ```toml
 [modules]
 left = ["workspaces", "taskbar", "window"]
-center = ["clock"]
+center = ["clock", "weather"]
 right = ["tray", "cpu", "memory", "gpu", "network", "brightness", "volume"]
 ```
 
-Built-in names: `workspaces`, `taskbar`, `window`, `clock`, `cpu`, `memory`,
+Built-in names: `workspaces`, `taskbar`, `window`, `clock`, `weather`, `cpu`, `memory`,
 `gpu`, `network`, `volume`, `brightness`, `tray`. Custom islands are
 `custom:<id>` (or a bare id that is treated as custom).
 
@@ -118,6 +120,19 @@ on_right_click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 ```
 
 `on_left_click` is an alias for `on_click`. Tray icons keep native SNI actions.
+
+### Weather
+
+Current conditions via [wttr.in](https://wttr.in) (`curl`). Shown next to the clock
+by default. Hover for location, feels-like, wind, humidity, and today’s high/low.
+
+```toml
+[modules.weather]
+# location = "Montreal"   # empty = IP geolocation
+unit = "c"                # "c" or "f"
+interval_ms = 600000
+on_click = "xdg-open https://wttr.in"
+```
 
 ### Volume / brightness
 
@@ -180,15 +195,14 @@ Left-click focuses the window (niri / Hyprland). Icons resolve from app id,
 
 ```toml
 [[modules.custom]]
-id = "weather"
-command = "curl"
-args = ["-s", "https://wttr.in/?format=1"]
-interval_ms = 600000
-on_click = "xdg-open https://wttr.in"
+id = "uptime"
+command = "uptime"
+args = ["-p"]
+interval_ms = 60000
 json = false           # true → parse stdout JSON and use the `text` field
 ```
 
-Reference as `custom:weather` in `left` / `center` / `right`.
+Reference as `custom:uptime` in `left` / `center` / `right`.
 
 ### Separators and tray menu
 
@@ -240,7 +254,7 @@ finds one; otherwise they fall back to the UI font.
 | --- | --- |
 | `skyline` | Binary: iced daemon, widgets, layer-shell popups |
 | `skyline-core` | Config, `ModuleKind`, snapshots, `ServiceEvent` |
-| `skyline-services` | Clock, sys, net, audio, brightness, tray, custom, config watch |
+| `skyline-services` | Clock, weather, sys, net, audio, brightness, tray, custom, config watch |
 | `skyline-niri` | Niri EventStream → `CompositorState` |
 | `skyline-hyprland` | Hyprland IPC → `CompositorState` |
 | `vendor/system-tray` | Patched SNI host (see below) |

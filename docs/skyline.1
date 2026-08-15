@@ -18,7 +18,7 @@ is a Wayland status bar for compositors that implement
 .B wlr-layer-shell
 (niri, Hyprland, Sway, and others). It draws modular
 .I islands
-on each monitor with workspaces, window titles, a clock, resource meters,
+on each monitor with workspaces, window titles, a clock, weather, resource meters,
 network status, volume and brightness controls, custom command modules, and a
 StatusNotifierItem system tray.
 .PP
@@ -176,6 +176,7 @@ are arrays of module names:
 .BR taskbar ,
 .BR window ,
 .BR clock ,
+.BR weather ,
 .BR cpu ,
 .BR memory ,
 .BR gpu ,
@@ -228,6 +229,18 @@ the strip grows with icon count),
 and
 .BR max_items .
 Left-click focuses the window (niri / Hyprland).
+.TP
+.B [modules.weather]
+Current conditions from wttr.in.
+.BR location
+(city name; empty uses IP geolocation),
+.BR unit
+(\fIc\fR Celsius, default, or \fIf\fR Fahrenheit),
+.BR interval_ms
+(refresh interval, default
+.BR 600000 ).
+Hover shows extra details. Requires
+.BR curl (1).
 .TP
 .B [modules.network]
 .B show_name
@@ -343,6 +356,7 @@ Skyline treats those as non-fatal.
 .BR hyprland (1),
 .BR wpctl (1),
 .BR brightnessctl (1),
+.BR curl (1),
 .BR nmcli (1)
 .SH AUTHOR
 Skyline contributors

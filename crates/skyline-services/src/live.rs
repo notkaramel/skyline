@@ -13,6 +13,8 @@ pub struct LiveServiceConfig {
     pub volume_detect_bluetooth: AtomicBool,
     /// Stored as centi-percent (150.0% → 15000) for atomic updates.
     volume_max_centi: AtomicU64,
+    pub weather_location: RwLock<String>,
+    pub weather_interval_ms: AtomicU64,
 }
 
 static LIVE: OnceLock<Arc<LiveServiceConfig>> = OnceLock::new();
@@ -25,6 +27,8 @@ pub fn init(config: &Config) -> Arc<LiveServiceConfig> {
         tray_started: AtomicBool::new(false),
         volume_detect_bluetooth: AtomicBool::new(config.modules.volume.detect_bluetooth),
         volume_max_centi: AtomicU64::new(percent_to_centi(config.modules.volume.max_percent)),
+        weather_location: RwLock::new(config.modules.weather.location.clone()),
+        weather_interval_ms: AtomicU64::new(config.modules.weather.interval_ms.max(60_000)),
     });
     let _ = LIVE.set(live.clone());
     live
@@ -47,6 +51,13 @@ pub fn apply(config: &Config) {
         .store(config.modules.volume.detect_bluetooth, Ordering::Relaxed);
     live.volume_max_centi.store(
         percent_to_centi(config.modules.volume.max_percent),
+        Ordering::Relaxed,
+    );
+    if let Ok(mut loc) = live.weather_location.write() {
+        *loc = config.modules.weather.location.clone();
+    }
+    live.weather_interval_ms.store(
+        config.modules.weather.interval_ms.max(60_000),
         Ordering::Relaxed,
     );
 }

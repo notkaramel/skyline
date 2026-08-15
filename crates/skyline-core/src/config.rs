@@ -167,6 +167,7 @@ pub struct ModulesConfig {
     pub center: Vec<ModuleKind>,
     pub right: Vec<ModuleKind>,
     pub clock: ClockConfig,
+    pub weather: WeatherConfig,
     pub custom: Vec<CustomModuleConfig>,
     pub sys: SysConfig,
     pub volume: VolumeConfig,
@@ -185,7 +186,7 @@ impl Default for ModulesConfig {
     fn default() -> Self {
         Self {
             left: vec![ModuleKind::Workspaces, ModuleKind::Taskbar, ModuleKind::Window],
-            center: vec![ModuleKind::Clock],
+            center: vec![ModuleKind::Clock, ModuleKind::Weather],
             right: vec![
                 ModuleKind::Tray,
                 ModuleKind::Cpu,
@@ -196,6 +197,7 @@ impl Default for ModulesConfig {
                 ModuleKind::Volume,
             ],
             clock: ClockConfig::default(),
+            weather: WeatherConfig::default(),
             custom: vec![],
             sys: SysConfig::default(),
             volume: VolumeConfig::default(),
@@ -238,6 +240,7 @@ impl ModulesConfig {
             ModuleKind::Window => &self.window.clicks,
             ModuleKind::Taskbar => &self.taskbar.clicks,
             ModuleKind::Clock => &self.clock.clicks,
+            ModuleKind::Weather => &self.weather.clicks,
             ModuleKind::Cpu => &self.cpu.clicks,
             ModuleKind::Memory => &self.memory.clicks,
             ModuleKind::Gpu => &self.gpu.clicks,
@@ -267,6 +270,7 @@ impl ModulesConfig {
             ModuleKind::Window => self.window.clicks.clone(),
             ModuleKind::Taskbar => self.taskbar.clicks.clone(),
             ModuleKind::Clock => self.clock.clicks.clone(),
+            ModuleKind::Weather => self.weather.clicks.clone(),
             ModuleKind::Cpu => self.cpu.clicks.clone(),
             ModuleKind::Memory => self.memory.clicks.clone(),
             ModuleKind::Gpu => self.gpu.clicks.clone(),
@@ -312,6 +316,7 @@ pub enum ModuleKind {
     Window,
     Taskbar,
     Clock,
+    Weather,
     Cpu,
     Memory,
     Gpu,
@@ -329,6 +334,7 @@ impl ModuleKind {
             Self::Window => "window".into(),
             Self::Taskbar => "taskbar".into(),
             Self::Clock => "clock".into(),
+            Self::Weather => "weather".into(),
             Self::Cpu => "cpu".into(),
             Self::Memory => "memory".into(),
             Self::Gpu => "gpu".into(),
@@ -361,6 +367,7 @@ impl<'de> Deserialize<'de> for ModuleKind {
             "window" => Self::Window,
             "taskbar" => Self::Taskbar,
             "clock" => Self::Clock,
+            "weather" => Self::Weather,
             "cpu" => Self::Cpu,
             "memory" => Self::Memory,
             "gpu" => Self::Gpu,
@@ -486,6 +493,57 @@ impl Default for ClockConfig {
             format: "%a %b %d ☀️ %I:%M %p".into(),
             tooltip_format: "%Y-%m-%d %I:%M:%S %p".into(),
             clicks: ClickActions::default(),
+        }
+    }
+}
+
+/// `"c"` (default) or `"f"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TemperatureUnit {
+    #[default]
+    #[serde(alias = "celsius", alias = "C")]
+    C,
+    #[serde(alias = "fahrenheit", alias = "F")]
+    F,
+}
+
+impl TemperatureUnit {
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::F => "F",
+        }
+    }
+
+    pub fn is_fahrenheit(self) -> bool {
+        matches!(self, Self::F)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeatherConfig {
+    /// City / region for wttr.in. Empty = IP geolocation.
+    pub location: String,
+    /// Display unit: `"c"` (default) or `"f"`.
+    pub unit: TemperatureUnit,
+    /// How often to refresh from wttr.in (milliseconds).
+    pub interval_ms: u64,
+    #[serde(flatten)]
+    pub clicks: ClickActions,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self {
+            location: String::new(),
+            unit: TemperatureUnit::C,
+            interval_ms: 600_000,
+            clicks: ClickActions {
+                on_click: Some("xdg-open https://wttr.in".into()),
+                on_right_click: None,
+            },
         }
     }
 }

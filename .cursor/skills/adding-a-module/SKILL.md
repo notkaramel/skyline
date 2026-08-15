@@ -1,8 +1,8 @@
 ---
 name: adding-a-module
 description: >-
-  Add or change a Skyline status-bar module (workspaces, clock, meters, network,
-  volume, brightness, tray, custom islands). Use when creating a new ModuleKind,
+  Add or change a Skyline status-bar module (workspaces, clock, weather, meters,
+  network, volume, brightness, tray, custom islands). Use when creating a new ModuleKind,
   wiring clicks, or extending module config/UI/services.
 ---
 
@@ -14,15 +14,15 @@ Prefer this when the user wants a command output on the bar:
 
 ```toml
 [[modules.custom]]
-id = "weather"
-command = "curl"
-args = ["-s", "https://wttr.in/?format=1"]
-interval_ms = 600000
-on_click = "xdg-open https://wttr.in"
+id = "uptime"
+command = "uptime"
+args = ["-p"]
+interval_ms = 60000
 json = false
 ```
 
-Layout entry: `"custom:weather"`. JSON mode reads a `text` field from stdout.
+Layout entry: `"custom:uptime"`. JSON mode reads a `text` field from stdout.
+Built-in weather is `[modules.weather]` + layout `"weather"` (wttr.in), not a custom island.
 Clicks: `sh -c` via `skyline_services::run_click`. Empty stdout hides the module.
 
 ## Built-in module checklist

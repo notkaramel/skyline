@@ -79,7 +79,7 @@ Volume/brightness scroll is **previewed** in `displayed_*` then flushed after
 | --- | --- | --- |
 | `TrayDismiss` | Top, fullscreen | click-catcher under menu |
 | `TrayMenu` | Overlay, top-right | 240×(rows×28+16) max 400; margin uses `tray_menu_gap` |
-| `ClockTooltip` | Overlay, events transparent | hover; width from char count |
+| `HoverTooltip` | xdg-popup under the module | clock / weather hover; parent = cursor monitor |
 
 Escape or pointer press outside the menu → `close_tray_popups`.
 Track ids in `popup_ids`. `view` switches on popup kind **before** drawing the bar.

@@ -9,6 +9,7 @@ mod live;
 mod network;
 mod sys;
 mod tray;
+mod weather;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -32,6 +33,7 @@ pub fn spawn_all(config: &Config, config_path: PathBuf, tx: ServiceTx) {
     live::init(config);
 
     clock::spawn(tx.clone());
+    weather::spawn(tx.clone());
     sys::spawn(tx.clone());
     network::spawn(tx.clone());
     audio::spawn(tx.clone());
