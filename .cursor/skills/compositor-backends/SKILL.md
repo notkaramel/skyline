@@ -44,7 +44,9 @@ Niri layout events otherwise redraw at compositor frame rate.
 
 - `Socket::connect` + `Request::EventStream`
 - Maintain `niri_ipc::state::EventStreamState`
-- Refresh `Request::Outputs` occasionally (every 64 events or if empty) for hotplug
+- Refresh `Request::Outputs` on workspace-output changes, when empty, or at least
+  every 2s so hotplug / DPMS is picked up. Keep last-known geometry if `logical`
+  is temporarily missing.
 - Focus: `Action::FocusWorkspace { Id }` / `Action::FocusWindow { id }`
 - Pin `niri-ipc = "=26.4.0"` — keep in lockstep with the running niri version
 

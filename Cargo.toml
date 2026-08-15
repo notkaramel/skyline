@@ -27,7 +27,7 @@ futures = "0.3"
 futures-util = "0.3"
 hyprland = "0.4.0-beta.3"
 iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "tokio", "wayland", "image", "svg", "advanced"] }
-iced_layershell = "0.19.1"
+iced_layershell = { path = "vendor/iced_layershell", version = "0.19.1" }
 libpulse-binding = "2.30"
 niri-ipc = "=26.4.0"
 nmrs = "3"

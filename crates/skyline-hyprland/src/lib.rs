@@ -61,6 +61,18 @@ fn run(tx: UnboundedSender<ServiceEvent>) -> hyprland::Result<()> {
     }
     {
         let tx = tx.clone();
+        listener.add_monitor_added_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
+        listener.add_monitor_removed_handler(move |_| {
+            let _ = push_snapshot(&tx);
+        });
+    }
+    {
+        let tx = tx.clone();
         listener.add_window_opened_handler(move |_| {
             let _ = push_snapshot(&tx);
         });

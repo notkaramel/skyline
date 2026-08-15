@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use niri_ipc::socket::Socket;
 use niri_ipc::state::{EventStreamState, EventStreamStatePart};
@@ -9,6 +10,10 @@ use niri_ipc::{Request, Response};
 use skyline_core::{CompositorState, OutputInfo, ServiceEvent, WindowInfo, WorkspaceInfo};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
+
+/// Re-fetch outputs at least this often so DPMS / hotplug is not stuck behind
+/// a long stretch of layout-only events.
+const OUTPUT_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Spawn a blocking thread that streams niri events into `tx`.
 pub fn spawn(tx: UnboundedSender<ServiceEvent>) {
@@ -23,7 +28,7 @@ pub fn spawn(tx: UnboundedSender<ServiceEvent>) {
 }
 
 fn run(tx: UnboundedSender<ServiceEvent>) -> std::io::Result<()> {
-    let mut outputs = fetch_outputs();
+    let mut outputs = fetch_outputs(&[]);
     let mut socket = Socket::connect()?;
     let reply = socket.send(Request::EventStream)?;
     match reply {
@@ -39,8 +44,9 @@ fn run(tx: UnboundedSender<ServiceEvent>) -> std::io::Result<()> {
 
     let mut state = EventStreamState::default();
     let mut read_event = socket.read_events();
-    let mut events_since_output_refresh = 0u32;
+    let mut last_output_refresh = Instant::now();
     let mut last_snapshot: Option<CompositorState> = None;
+    let mut last_workspace_outputs: HashMap<u64, Option<String>> = HashMap::new();
 
     loop {
         let event = match read_event() {
@@ -52,11 +58,27 @@ fn run(tx: UnboundedSender<ServiceEvent>) -> std::io::Result<()> {
         };
         debug!(?event, "niri event");
         state.apply(event);
-        events_since_output_refresh += 1;
-        // Outputs rarely change; refresh occasionally so hotplug is picked up.
-        if events_since_output_refresh >= 64 || outputs.is_empty() {
-            outputs = fetch_outputs();
-            events_since_output_refresh = 0;
+
+        let workspace_outputs_changed = {
+            let current: HashMap<u64, Option<String>> = state
+                .workspaces
+                .workspaces
+                .values()
+                .map(|ws| (ws.id, ws.output.clone()))
+                .collect();
+            let changed = current != last_workspace_outputs;
+            if changed {
+                last_workspace_outputs = current;
+            }
+            changed
+        };
+
+        if workspace_outputs_changed
+            || outputs.is_empty()
+            || last_output_refresh.elapsed() >= OUTPUT_REFRESH_INTERVAL
+        {
+            outputs = fetch_outputs(&outputs);
+            last_output_refresh = Instant::now();
         }
         let snapshot = snapshot_from_state(&state, &outputs);
         // Layout-only niri events often leave our bar snapshot unchanged; skip
@@ -72,27 +94,47 @@ fn run(tx: UnboundedSender<ServiceEvent>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn fetch_outputs() -> Vec<OutputInfo> {
+fn fetch_outputs(previous: &[OutputInfo]) -> Vec<OutputInfo> {
     let Ok(mut socket) = Socket::connect() else {
-        return Vec::new();
+        return previous.to_vec();
     };
     let Ok(reply) = socket.send(Request::Outputs) else {
-        return Vec::new();
+        return previous.to_vec();
     };
     let Ok(Response::Outputs(map)) = reply else {
-        return Vec::new();
+        return previous.to_vec();
     };
+    let prev_by_name: HashMap<&str, &OutputInfo> =
+        previous.iter().map(|o| (o.name.as_str(), o)).collect();
     let mut outs: Vec<OutputInfo> = map
         .into_iter()
-        .filter_map(|(name, out)| {
-            let logical = out.logical?;
-            Some(OutputInfo {
-                name,
-                x: logical.x,
-                y: logical.y,
-                width: logical.width,
-                height: logical.height,
-            })
+        .map(|(name, out)| {
+            if let Some(logical) = out.logical {
+                OutputInfo {
+                    name,
+                    x: logical.x,
+                    y: logical.y,
+                    width: logical.width,
+                    height: logical.height,
+                }
+            } else if let Some(prev) = prev_by_name.get(name.as_str()) {
+                // DPMS / temporarily missing logical geometry — keep last size for pinning.
+                OutputInfo {
+                    name,
+                    x: prev.x,
+                    y: prev.y,
+                    width: prev.width,
+                    height: prev.height,
+                }
+            } else {
+                OutputInfo {
+                    name,
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                }
+            }
         })
         .collect();
     outs.sort_by(|a, b| (a.x, a.y).cmp(&(b.x, b.y)));

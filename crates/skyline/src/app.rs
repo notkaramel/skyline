@@ -313,11 +313,7 @@ impl App {
                 {
                     return self.close_tray_popups();
                 }
-                let parent = LAST_POINTER_WINDOW
-                    .lock()
-                    .ok()
-                    .and_then(|g| *g)
-                    .or_else(|| self.bar_widths.keys().copied().next());
+                let parent = self.live_popup_parent();
                 let close = self.close_tray_popups();
                 if let Some(parent) = parent {
                     self.pending_tray = Some(PendingTrayMenu {
@@ -364,6 +360,17 @@ impl App {
                 }
             }
             Message::WindowClosed(id) => {
+                if let Ok(mut last) = LAST_POINTER_WINDOW.lock() {
+                    if *last == Some(id) {
+                        *last = None;
+                    }
+                }
+                let was_bar = self.bar_widths.contains_key(&id)
+                    || self
+                        .bar_outputs
+                        .lock()
+                        .map(|m| m.contains_key(&id))
+                        .unwrap_or(false);
                 let kind = self.popup_ids.remove(&id);
                 if let Ok(mut map) = self.bar_outputs.lock() {
                     map.remove(&id);
@@ -373,7 +380,19 @@ impl App {
                     self.tray_menu = None;
                     self.pending_tray = None;
                 }
-                Task::none()
+                if self
+                    .pending_tray
+                    .as_ref()
+                    .is_some_and(|p| p.parent == id)
+                {
+                    self.pending_tray = None;
+                }
+                if was_bar {
+                    // Parent surface is gone — drop tray/hover popups that may reference it.
+                    Task::batch([self.close_tray_popups(), self.close_all_hover_tooltips()])
+                } else {
+                    Task::none()
+                }
             }
             Message::BarOpened { id, width } => {
                 if let Some(w) = width {
@@ -471,11 +490,41 @@ impl App {
         if names.is_empty() {
             return;
         }
-        let Ok(mut map) = self.bar_outputs.lock() else {
-            return;
+        let orphaned: Vec<(Id, Option<f32>)> = {
+            let Ok(mut map) = self.bar_outputs.lock() else {
+                return;
+            };
+            // Drop pins to outputs that disappeared.
+            map.retain(|_, out| names.iter().any(|n| n == out));
+            // Bars left without a pin need reassignment.
+            self.bar_widths
+                .keys()
+                .copied()
+                .filter(|id| !map.contains_key(id))
+                .map(|id| (id, self.bar_widths.get(&id).copied()))
+                .collect()
         };
-        // Drop pins to outputs that disappeared; bars re-pin on next view/open.
-        map.retain(|_, out| names.iter().any(|n| n == out));
+        for (id, width) in orphaned {
+            self.pin_bar_output(id, width);
+        }
+    }
+
+    fn bar_surface_alive(&self, id: Id) -> bool {
+        self.bar_widths.contains_key(&id)
+            || self
+                .bar_outputs
+                .lock()
+                .map(|m| m.contains_key(&id))
+                .unwrap_or(false)
+    }
+
+    fn live_popup_parent(&self) -> Option<Id> {
+        let candidate = LAST_POINTER_WINDOW
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .or_else(|| self.bar_widths.keys().copied().next());
+        candidate.filter(|id| self.bar_surface_alive(*id))
     }
 
     fn output_for_bar(&self, id: Id) -> Option<String> {
@@ -585,11 +634,7 @@ impl App {
 
         let close_other = self.close_all_hover_tooltips();
 
-        let parent = LAST_POINTER_WINDOW
-            .lock()
-            .ok()
-            .and_then(|g| *g)
-            .or_else(|| self.bar_widths.keys().copied().next());
+        let parent = self.live_popup_parent();
         let Some(parent) = parent else {
             return close_other;
         };
@@ -726,8 +771,8 @@ impl App {
         let parent = pending
             .as_ref()
             .map(|p| p.parent)
-            .or_else(|| LAST_POINTER_WINDOW.lock().ok().and_then(|g| *g))
-            .or_else(|| self.bar_widths.keys().copied().next());
+            .filter(|id| self.bar_surface_alive(*id))
+            .or_else(|| self.live_popup_parent());
         let Some(parent) = parent else {
             return Task::batch(tasks);
         };

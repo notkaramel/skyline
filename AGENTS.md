@@ -20,6 +20,8 @@ crates/skyline-hyprland/     # Hyprland IPC backend
 examples/config.toml         # canonical defaults (embedded into the binary)
 docs/skyline.1               # man page
 vendor/system-tray/          # patched SNI host — touch only for tray bugs
+vendor/iced_layershell/      # patched for monitor hotplug / surface cleanup
+vendor/layershellev/         # companion to iced_layershell (output destroy / TargetScreen)
 ```
 
 Workspace root: `Cargo.toml`. Version `0.1.0`, edition 2021, MIT.
@@ -67,7 +69,9 @@ services / compositor backends
    before `send` and again in `App::apply_service`. Compositor floods: keep only
    the latest snapshot in a batch.
 3. **Do not edit `vendor/system-tray` unless fixing SNI parsing / host
-   robustness.** Upstream quirks are already patched there.
+   robustness.** Upstream quirks are already patched there. Same for
+   `vendor/iced_layershell` and `vendor/layershellev` — only touch for
+   Wayland output / layer-shell hotplug bugs (see each `SKYLINE_PATCHES.md`).
 4. **Keep `examples/config.toml`, `Config` defaults, README, and `docs/skyline.1`
    in sync** when you add or rename a config key.
 5. **Hot-reload must keep working.** New service knobs that should apply without
